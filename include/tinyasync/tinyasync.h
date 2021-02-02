@@ -257,23 +257,24 @@ namespace tinyasync
         set_name_r(h, args...);
     }
 
-    template <class T>
-    struct NamedMixin
-    {
-        T &set_name(std::string n) &
-        {
-            ::tinyasync::set_name(((T *)this)->m_h, std::move(n));
-            return (T &)*this;
-        }
 
-        T &&set_name(std::string n) &&
-        {
-            ::tinyasync::set_name(((T *)this)->m_h, std::move(n));
-            return std::move((T &&) * this);
-        }
-    };
 
-    struct Task : NamedMixin<Task>
+    void throw_errno(std::string const &what) {
+        throw std::system_error(errno, std::system_category(), what);
+    }
+
+    void throw_errno(char const *fmt, ...) {
+
+        char buf[1000];
+        va_list args;
+        va_start(args, fmt);
+        vsnprintf(buf, sizeof(buf), fmt, args);
+        va_end(args);
+
+        throw std::system_error(errno, std::system_category(), buf);
+    }
+
+    struct Task
     {
 
         struct Promise
@@ -282,16 +283,15 @@ namespace tinyasync
             static void *operator new(std::size_t size)
             {
                 TINYASYNC_GUARD("Task::Promise::operator new():");
-                TINYASYNC_LOG("%d bytes", (int)size);
-
-                return ::operator new(size);
+                auto ptr = ::operator new(size);
+                TINYASYNC_LOG("%d bytes at %p", (int)size, ptr);                
+                return ptr;
             }
 
             static void operator delete(void *ptr, std::size_t size)
             {
                 TINYASYNC_GUARD("Task::Promise::operator delete():");
-                TINYASYNC_LOG("%d bytes", (int)size);
-
+                TINYASYNC_LOG("%d bytes at %p", (int)size, ptr);
                 ::operator delete(ptr, size);
             }
 
@@ -315,7 +315,7 @@ namespace tinyasync
             Promise(Promise &&r) = delete;
             Promise(Promise const &r) = delete;
 
-            struct InitialAwaityer
+            struct InitialAwaityer : std::suspend_always
             {
                 std::coroutine_handle<> m_h;
 
@@ -323,10 +323,6 @@ namespace tinyasync
                 {
                 }
 
-                bool await_ready() const noexcept
-                {
-                    return false;
-                }
                 void await_suspend(std::coroutine_handle<> h) const noexcept
                 {
                     TINYASYNC_GUARD("InitialAwaityer::await_suspend():");
@@ -346,23 +342,18 @@ namespace tinyasync
                 return {std::coroutine_handle<Promise>::from_promise(*this)};
             }
 
-            struct FinalAwater
+            struct FinalAwater : std::suspend_always
             {
                 std::coroutine_handle<> m_continuum;
 
-                FinalAwater(std::coroutine_handle<> continuum) : m_continuum(continuum)
+                FinalAwater(std::coroutine_handle<> continuum) noexcept : m_continuum(continuum)
                 {
-                }
-
-                bool await_ready() const noexcept
-                {
-                    return false;
                 }
 
                 std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) const noexcept
                 {
-                    TINYASYNC_GUARD("FinalAwater::await_suspend():");
-                    TINYASYNC_LOG("%s suspended, resume continuum of it, it's %s\n", name(h), name(m_continuum));
+                    TINYASYNC_GUARD("Task::FinalAwater::await_suspend():");
+                    TINYASYNC_LOG("`%s` suspended, resume its continuum `%s`", name(h), name(m_continuum));
                     if (m_continuum)
                     {
                         // co_wait ...
@@ -376,8 +367,8 @@ namespace tinyasync
 
                 void await_resume() const noexcept
                 {
-                    TINYASYNC_GUARD("FinalAwater::await_resume():");
-                    TINYASYNC_LOG("");
+                    TINYASYNC_GUARD("Task::FinalAwater::await_resume():");
+                    TINYASYNC_LOG("Bug!");
                     // never reach here
                     assert(false);
                 }
@@ -385,15 +376,16 @@ namespace tinyasync
 
             FinalAwater final_suspend() noexcept
             {
-                return {m_continue};
+                return { m_continuum };
             }
 
             void unhandled_exception() { std::terminate(); }
             void return_void()
             {
             }
-            std::coroutine_handle<> m_continue = nullptr;
+            std::coroutine_handle<> m_continuum = nullptr;
         };
+
         using promise_type = Promise;
         std::coroutine_handle<promise_type> m_h;
 
@@ -410,7 +402,6 @@ namespace tinyasync
         struct Awaiter
         {
             std::coroutine_handle<promise_type> m_h;
-            std::coroutine_handle<> m_suspend_coroutine;
 
             Awaiter(std::coroutine_handle<promise_type> h) : m_h(h)
             {
@@ -420,22 +411,20 @@ namespace tinyasync
                 return false;
             }
 
-            void await_suspend(std::coroutine_handle<> h)
+            void await_suspend(std::coroutine_handle<> suspend_coroutine)
             {
-                m_suspend_coroutine = h;
                 TINYASYNC_GUARD("Task::Awaiter::await_resume()(`%s`):", name(m_h));
 
-                TINYASYNC_LOG("set continuum of `%s` to `%s`", name(m_h), name(h));
-                m_h.promise().m_continue = h;
-                TINYASYNC_LOG("`%s` suspended, resume task `%s`", name(h), name(m_h));
+                TINYASYNC_LOG("set continuum of `%s` to `%s`", name(m_h), name(suspend_coroutine));
+                m_h.promise().m_continuum = suspend_coroutine;
+                TINYASYNC_LOG("`%s` suspended, resume `%s`", name(suspend_coroutine), name(m_h));
                 m_h.resume();
-                TINYASYNC_LOG("resumed from `%s`, `%s` already suspend, back to caller/resumer", name(m_h), name(h));
+                TINYASYNC_LOG("resumed from `%s`, `%s` already suspend, back to caller/resumer", name(m_h), name(suspend_coroutine));
             }
 
             void await_resume()
             {
                 TINYASYNC_GUARD("Task::Awaiter::await_resume()(`%s`):", name(m_h));
-                TINYASYNC_LOG("resuming %s", name(m_suspend_coroutine));
             }
         };
 
@@ -476,7 +465,7 @@ namespace tinyasync
         Task &operator=(Task const &r) = delete;
     };
 
-    struct Spawn : NamedMixin<Spawn>
+    struct Spawn
     {
 
         struct Promise
@@ -494,14 +483,15 @@ namespace tinyasync
             static void *operator new(std::size_t size)
             {
                 TINYASYNC_GUARD("Spawn::Promise::operator new():");
-                TINYASYNC_LOG("%d bytes", (int)size);
-                return ::operator new(size);
+                auto ptr = ::operator new(size);
+                TINYASYNC_LOG("%d bytes at %p", (int)size, ptr);
+                return ptr;
             }
 
             static void operator delete(void *ptr, std::size_t size)
             {
                 TINYASYNC_GUARD("Spawn::Promise::operator delete():");
-                TINYASYNC_LOG("%d bytes", (int)size);
+                TINYASYNC_LOG("%d bytes at %p", (int)size, ptr);
                 return ::operator delete(ptr, size);
             }
 
@@ -571,11 +561,27 @@ namespace tinyasync
 #if defined(__unix__)
 
     using IoEvent = epoll_event;
+    
+#endif
+
     struct Callback
     {
+        using callback_base_type = Callback;
         virtual void callback(IoEvent &evt) = 0;
     };
-#endif
+    
+    struct Callback2
+    {
+        using callback_base_type = Callback2;
+        // virtual void callback(IoEvent &evt) = 0;        
+
+        void callback(IoEvent &evt) {
+            this->m_callback(this, evt);
+        }
+
+        using CallbackPtr = void (*)(callback_base_type *callback, IoEvent &);
+        CallbackPtr m_callback;
+    };
 
     struct TimerAwaiter;
     struct IoContext;
@@ -630,57 +636,48 @@ namespace tinyasync
             return m_native_handle;
         }
 
-        void abort()
+        void request_abort()
         {
             m_abort_requested = true;
         }
 
         void run()
         {
-
-#ifdef _WIN32
-            for (;;)
-            {
-                // get thread into alternative state
-                // in thi state, the callback get a chance to be invoked
-                SleepEx(INFINITE, TRUE);
-            }
-
-#elif defined(__unix__)
+            TINYASYNC_GUARD("IoContex::run():");
 
             for (; !m_abort_requested;)
             {
+#ifdef _WIN32
+                // get thread into alternative state
+                // in thi state, the callback get a chance to be invoked
+                SleepEx(INFINITE, TRUE);
+
+#elif defined(__unix__)
+
                 int const maxevents = 5;
                 epoll_event events[maxevents];
                 auto epfd = m_native_handle;
                 int const timeout = -1; // indefinitely
 
-                //printf("epool_wait ...\n");
-
-                TINYASYNC_GUARD("IoContex::run():");
                 TINYASYNC_LOG("epoll_wait ...");
                 int nfds = epoll_wait(epfd, (epoll_event *)events, maxevents, timeout);
 
-                //printf("epool_wait finished: %d fd ready\n", nfds);
-
                 if (nfds == -1)
                 {
-                    throw std::system_error(errno, std::system_category(), "epoll wait error");
+                    throw_errno("epoll_wait error");
                 }
 
-                // for each event
                 for (auto i = 0; i < nfds; ++i)
                 {
-
-                    TINYASYNC_LOG("evt %d of %d", i, nfds);
+                    TINYASYNC_LOG("event %d of %d", i, nfds);
                     auto &evt = events[i];
                     auto callback = (Callback *)evt.data.ptr;
                     callback->callback(evt);
                 }
-            }
-
 #endif
+            }
         }
+
     };
 
     struct Protocol
@@ -746,49 +743,64 @@ namespace tinyasync
 
     struct ConnImpl;
 
-    class AsyncReceiveAwaiter : public std::suspend_always
-    {
-
+    template<class Awaiter, class Buffer>
+    class DataAwaiterMixin {
+    protected:
         friend class ConnImpl;
-        AsyncReceiveAwaiter *m_next;
+        friend class ConnCallback;
+
+        Awaiter *m_next;
         IoContext *m_ctx;
         ConnImpl *m_conn;
         std::coroutine_handle<> m_suspend_coroutine;
-        void *m_buffer_addr;
+        Buffer m_buffer_addr;
+        std::size_t m_buffer_start;
         std::size_t m_buffer_size;
         std::size_t m_bytes_transfer;
+    };
 
+    class AsyncReceiveAwaiter : public std::suspend_always,
+        public DataAwaiterMixin<AsyncReceiveAwaiter, void*>
+    {
     public:
+        friend class ConnImpl;
         AsyncReceiveAwaiter(ConnImpl &conn, void *b, std::size_t n);
         void await_suspend(std::coroutine_handle<> h);
         std::size_t await_resume();
     };
 
-    class AsyncSendAwaiter : public std::suspend_always
+    class AsyncSendAwaiter : public std::suspend_always,
+        public DataAwaiterMixin<AsyncSendAwaiter, void const *>
     {
-        friend class ConnImpl;
-        AsyncSendAwaiter *m_next;
-        IoContext *m_ctx;
-        ConnImpl *m_conn;
-        std::coroutine_handle<> m_suspend_coroutine;
-        void const *m_buffer_addr;
-        std::size_t m_buffer_size;
-        std::size_t m_bytes_transfer;
-
     public:
+        friend class ConnImpl;
         AsyncSendAwaiter(ConnImpl &conn, void const *b, std::size_t n);
         void await_suspend(std::coroutine_handle<> h);
         std::size_t await_resume();
     };
 
+    struct ConnCallback : Callback
+    {
+        ConnImpl *m_conn;
+        ConnCallback(ConnImpl *conn) : m_conn(conn)
+        {
+            TINYASYNC_GUARD("ConnCallback::ConnCallback():");
+            TINYASYNC_LOG("conn %p", conn);
+        }
+        void callback(IoEvent&) override;
+
+    };
+
     class ConnImpl
     {
-
         friend class AsyncReceiveAwaiter;
         friend class AsyncSendAwaiter;
+        friend class ConnCallback;
+
 
         IoContext *m_ctx;
         NativeHandle m_conn_handle;
+        ConnCallback m_callback { this };
         AsyncReceiveAwaiter *m_recv_awaiter = nullptr;
         AsyncSendAwaiter *m_send_awaiter = nullptr;
 
@@ -801,31 +813,21 @@ namespace tinyasync
                 close_handle(m_conn_handle);
                 m_conn_handle = NULL_HANDLE;
 
-                new (this) ConnImpl(*m_ctx, NULL_HANDLE, false);
+                m_conn_handle = NULL_HANDLE;
             }
         }
 
-        ConnImpl(IoContext &ctx, NativeHandle conn_sock, bool already_bind_to_epoll)
+        ConnImpl(IoContext &ctx, NativeHandle conn_sock)
         {
             TINYASYNC_GUARD("ConnImpl");
 
             m_ctx = &ctx;
             m_conn_handle = conn_sock;
 
-            if (conn_sock && !already_bind_to_epoll)
+            if (conn_sock)
             {
                 TINYASYNC_LOG("setnonblocking %d", conn_sock);
                 setnonblocking(conn_sock);
-
-                epoll_event ev;
-                //ev.events = EPOLLIN | EPOLLOUT;
-                ev.events = EPOLLIN;
-                ev.data.ptr = &m_callback;
-                TINYASYNC_LOG("epoll_ctl %d", conn_sock);
-                if (epoll_ctl(m_ctx->handle(), EPOLL_CTL_ADD, conn_sock, &ev) == -1)
-                {
-                    throw std::system_error(errno, std::system_category(), "can't bind connect to epoll");
-                }
             }
         }
 
@@ -841,103 +843,94 @@ namespace tinyasync
 
         AsyncReceiveAwaiter async_receive(void *buffer, std::size_t bytes)
         {
-            TINYASYNC_GUARD("Connection:receive()");
-            TINYASYNC_LOG("");
+            TINYASYNC_GUARD("Connection:receive():");
+            TINYASYNC_LOG("try to receive %d bytes", bytes);
+
             return {*this, buffer, bytes};
         }
 
         AsyncSendAwaiter async_send(void const *buffer, std::size_t bytes)
         {
-            TINYASYNC_GUARD("Connection:send()");
-            TINYASYNC_LOG("");
+            TINYASYNC_GUARD("Connection:send():");
+            TINYASYNC_LOG("try to send %d bytes", bytes);
             return {*this, buffer, bytes};
         }
 
-    public:
-        struct ConnCallback : Callback
-        {
-
-            ConnImpl *m_conn;
-            ConnCallback(ConnImpl *conn) : m_conn(conn)
-            {
-                TINYASYNC_GUARD("ConnCallback::ConnectionCallback():");
-                TINYASYNC_LOG("conn %p", conn);
-            }
-
-            void callback(IoEvent &evt) override;
-
-        } m_callback{this};
+    
     };
 
-
-    void ConnImpl::ConnCallback::callback(IoEvent &evt)
+    void ConnCallback::callback(IoEvent &evt)
     {
         TINYASYNC_GUARD("ConnCallback::callback():");
 
-        if (evt.events | EPOLLIN)
-        {
+        if ((evt.events | EPOLLIN) && m_conn->m_recv_awaiter) {
+            // we want to read and it's ready to read
 
-            TINYASYNC_LOG("in for fd %d", m_conn->m_conn_handle);
+            TINYASYNC_LOG("ready for read for conn_handle %d", m_conn->m_conn_handle);
+
             auto awaiter = m_conn->m_recv_awaiter;
-            if(awaiter) {
+            int nbytes = recv(m_conn->m_conn_handle, awaiter->m_buffer_addr, (int)awaiter->m_buffer_size, 0);
 
+            if (nbytes < 0)
+            {
 
-                int nbytes = recv(m_conn->m_conn_handle, awaiter->m_buffer_addr, (int)awaiter->m_buffer_size, 0);
-
-                if (nbytes < 0)
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
                 {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK)
-                    {
-                        TINYASYNC_LOG("EAGAIN, fd = %d", m_conn->m_conn_handle);
-                        // just ok...
-                    }
-                    else
-                    {
-                        TINYASYNC_LOG("ERROR = %d, fd = %d", errno, m_conn->m_conn_handle);
-                        throw std::system_error(errno, std::system_category(), "recv error");
-                    }
-                } else {
-                    TINYASYNC_LOG("fd = %d, %d bytes read", m_conn->m_conn_handle, nbytes);
-                    awaiter->m_bytes_transfer = nbytes;
-                    awaiter->m_suspend_coroutine.resume();
+                    TINYASYNC_LOG("EAGAIN, fd = %d", m_conn->m_conn_handle);
                 }
+                else
+                {
+                    TINYASYNC_LOG("ERROR = %d, fd = %d", errno, m_conn->m_conn_handle);
+                    throw_errno("recv error");
+                }
+            } else {
+                if(nbytes == 0) {
+                    if(errno == ESHUTDOWN) {
+                        TINYASYNC_LOG("ESHUTDOWN, fd = %d", m_conn->m_conn_handle);
+                    }
+                }
+                TINYASYNC_LOG("fd = %d, %d bytes read", m_conn->m_conn_handle, nbytes);
+                awaiter->m_bytes_transfer = nbytes;
+
+                // may cause Connection self deleted
+                // so we should not want to read and send at the same
+                awaiter->m_suspend_coroutine.resume();
             }
 
-        }
-        
-        if (evt.events | EPOLLOUT)
-        {
-            TINYASYNC_LOG("out for fd %d", m_conn->m_conn_handle);
+        } else if((evt.events | EPOLLOUT) && m_conn->m_send_awaiter) {
+            // we want to send and it's ready to read
+
+            TINYASYNC_LOG("ready for send for conn_handle %d", m_conn->m_conn_handle);
             auto awaiter = m_conn->m_send_awaiter;
-            if(awaiter) {
+            int nbytes = ::send(m_conn->m_conn_handle, awaiter->m_buffer_addr, (int)awaiter->m_buffer_size, 0);
 
-                int nbytes = ::send(m_conn->m_conn_handle, awaiter->m_buffer_addr, (int)awaiter->m_buffer_size, 0);
-
-                if (nbytes < 0)
+            if (nbytes < 0)
+            {
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
                 {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK)
-                    {
-                        TINYASYNC_LOG("EAGAIN, fd = %d", m_conn->m_conn_handle);
-                        // just ok...
+                    TINYASYNC_LOG("EAGAIN, fd = %d", m_conn->m_conn_handle);
+                }
+                else
+                {
+                    TINYASYNC_LOG("ERROR = %d, fd = %d", errno, m_conn->m_conn_handle);
+                    throw_errno("send error");
+                }
+            } else {
+                if(nbytes == 0) {
+                    if(errno == ESHUTDOWN) {
+                        TINYASYNC_LOG("ESHUTDOWN, fd = %d", m_conn->m_conn_handle);
                     }
-                    else
-                    {
-                        TINYASYNC_LOG("ERROR = %d, fd = %d", errno, m_conn->m_conn_handle);
-                        throw std::system_error(errno, std::system_category(), "send error");
-                    }
-                } else {
-                    TINYASYNC_LOG("fd = %d, %d bytes sent", m_conn->m_conn_handle, nbytes);
-                    awaiter->m_bytes_transfer = nbytes;
-                    awaiter->m_suspend_coroutine.resume();
                 }
 
+                TINYASYNC_LOG("fd = %d, %d bytes sent", m_conn->m_conn_handle, nbytes);
+                awaiter->m_bytes_transfer = nbytes;
+
+                // may cause Connection self deleted
+                // so we should not want to read and send at the same
+                awaiter->m_suspend_coroutine.resume();
             }
-
-        }
-
-        if(!(evt.events &(EPOLLIN|EPOLLOUT)))
-        {
-            printf("unkonw events %x", evt.events);
+        } else {
+            TINYASYNC_LOG("not processed event for conn_handle %x", errno, m_conn->m_conn_handle);
             exit(1);
         }
     }
@@ -962,15 +955,26 @@ namespace tinyasync
         // insert into front of list
         this->m_next = m_conn->m_recv_awaiter;
         m_conn->m_recv_awaiter = this;
-        TINYASYNC_LOG("set recv_awaiter of %p to %p", m_conn, this);
+        TINYASYNC_LOG("set recv_awaiter of conn(%p) to %p", m_conn, m_conn->m_recv_awaiter);
+
+        epoll_event evt;
+        evt.data.ptr = &m_conn->m_callback;            
+        evt.events = EPOLLIN;
+        auto clterr = epoll_ctl(m_ctx->handle(), EPOLL_CTL_ADD, m_conn->m_conn_handle, &evt);
+        TINYASYNC_LOG("epoll_ctl(EPOOLIN|EPOLLLT) for conn_handle = %d", m_conn->m_conn_handle);
+
     }
 
     std::size_t AsyncReceiveAwaiter::await_resume()
     {
         TINYASYNC_GUARD("AsyncReceiveAwaiter::await_resume():");
-        TINYASYNC_LOG("");
         // pop from front of list
         m_conn->m_recv_awaiter = m_conn->m_recv_awaiter->m_next;
+        TINYASYNC_LOG("set recv_awaiter of conn(%p) to %p", m_conn, m_conn->m_recv_awaiter);
+
+        auto clterr = epoll_ctl(m_ctx->handle(), EPOLL_CTL_DEL, m_conn->m_conn_handle, NULL);
+        TINYASYNC_LOG("unregister conn_handle = %d", m_conn->m_conn_handle);
+
         return m_bytes_transfer;
     }
 
@@ -990,14 +994,25 @@ namespace tinyasync
         // insert front of list
         this->m_next = m_conn->m_send_awaiter;
         m_conn->m_send_awaiter = this;
+        TINYASYNC_LOG("set send_awaiter of conn(%p) to %p", m_conn, m_conn->m_send_awaiter);
+
+        epoll_event evt;
+        evt.data.ptr = &m_conn->m_callback;            
+        evt.events = EPOLLOUT;
+        auto clterr = epoll_ctl(m_ctx->handle(), EPOLL_CTL_ADD, m_conn->m_conn_handle, &evt);
+        TINYASYNC_LOG("epoll_ctl(EPOLLOUT|EPOLLLT) for conn_handle = %d", m_conn->m_conn_handle);
     }
 
     std::size_t AsyncSendAwaiter::await_resume()
     {
         TINYASYNC_GUARD("AsyncSendAwaiter::await_resume():");
-        TINYASYNC_LOG("");
         // pop from front of list
         m_conn->m_send_awaiter = m_conn->m_send_awaiter->m_next;
+        TINYASYNC_LOG("set recv_awaiter of conn(%p) to %p", m_conn, m_conn->m_send_awaiter);
+
+        auto clterr = epoll_ctl(m_ctx->handle(), EPOLL_CTL_DEL, m_conn->m_conn_handle, NULL);
+        TINYASYNC_LOG("unregister conn_handle = %d", m_conn->m_conn_handle);
+
         return m_bytes_transfer;
     }
 
@@ -1008,9 +1023,9 @@ namespace tinyasync
         // 2. reference stable, usefull for callbacks
         std::unique_ptr<ConnImpl> m_impl;
     public:
-        Connection(IoContext &ctx, NativeHandle conn_sock, bool already_bind_to_epoll = false)
+        Connection(IoContext &ctx, NativeHandle conn_sock)
         {
-            m_impl.reset(new ConnImpl(ctx, conn_sock, already_bind_to_epoll));
+            m_impl.reset(new ConnImpl(ctx, conn_sock));
         }
 
         AsyncReceiveAwaiter async_receive(void *buffer, std::size_t bytes)
@@ -1046,7 +1061,30 @@ namespace tinyasync
     {
         friend class AcceptAwaiter;
 
-    private:
+        struct AcceptCallback : Callback
+        {
+            AcceptorImpl *m_acceptor;
+
+            AcceptCallback(AcceptorImpl *acceptor)
+            {
+                m_acceptor = acceptor;
+            };
+
+            virtual void callback(IoEvent &evt) override
+            {
+                TINYASYNC_GUARD("AcceptCallback::callback():");
+                TINYASYNC_LOG("acceptor %p, awaiter %p", m_acceptor, m_acceptor->m_awaiter);
+                AcceptAwaiter *awaiter = m_acceptor->m_awaiter;
+                if(awaiter) {
+                    awaiter->m_suspend_coroutine.resume();
+                } else {
+                    // this will happen when after accetor.listen() but not yet co_await acceptor.async_accept()
+                    TINYASYNC_LOG("No awaiter found, event ignored, you should have been using level triger to get this event in next time");
+                }
+            }
+
+        };
+
         IoContext *m_ctx;
         NativeHandle m_listen_handle;
         bool m_listen_bind_epoll;
@@ -1055,6 +1093,7 @@ namespace tinyasync
         Endpoint m_endpoint;
         std::coroutine_handle<> m_suspend_coroutine;
         AcceptAwaiter *m_awaiter;
+        AcceptCallback m_callback = this;
 
     public:
         AcceptorImpl(IoContext &ctx)
@@ -1108,7 +1147,7 @@ namespace tinyasync
 
         void open(Protocol protocol)
         {
-
+            TINYASYNC_GUARD("Acceptor::open():");            
             // PF means protocol
             auto listenfd = ::socket(PF_INET, SOCK_STREAM, 0);
             if (listenfd == -1)
@@ -1120,11 +1159,13 @@ namespace tinyasync
 
             m_listen_handle = listenfd;
             m_protocol = protocol;
+            TINYASYNC_LOG("listen_handle %X", listenfd);            
         }
 
         void bind(Endpoint endpoint)
         {
 
+            TINYASYNC_GUARD("Acceptor::bind():");            
             int listenfd = m_listen_handle;
 
             sockaddr_in serveraddr;
@@ -1145,30 +1186,12 @@ namespace tinyasync
             }
 
             m_endpoint = endpoint;
+            TINYASYNC_LOG("fd = %X", listenfd);            
         }
-
-        struct AcceptCallback : Callback
-        {
-
-            AcceptorImpl *m_acceptor;
-
-            AcceptCallback(AcceptorImpl *acceptor)
-            {
-                m_acceptor = acceptor;
-            };
-
-            virtual void callback(IoEvent &evt) override
-            {
-                TINYASYNC_GUARD("AcceptCallback::callback():");
-                TINYASYNC_LOG("%p %p", m_acceptor, m_acceptor->m_awaiter);
-                AcceptAwaiter *awaiter = m_acceptor->m_awaiter;
-                awaiter->m_suspend_coroutine.resume();
-            }
-
-        } m_callback{this};
 
         void listen()
         {
+            TINYASYNC_GUARD("Acceptor::listen():");            
             int listenfd = m_listen_handle;
             int max_pendding_connection = 5;
             int err = ::listen(listenfd, max_pendding_connection);
@@ -1177,11 +1200,15 @@ namespace tinyasync
                 throw std::system_error(errno, std::system_category(), "can't listen port");
             }
 
-            // https://man7.org/linux/man-pages/man7/epoll.7.html
             epoll_event evt;
-            evt.data.ptr = &m_callback;
+            evt.data.ptr = &m_callback;            
+            // level triger by default
             evt.events = EPOLLIN;
-            auto fd3 = epoll_ctl(m_ctx->handle(), EPOLL_CTL_ADD, listenfd, &evt);
+            auto ctlerr = epoll_ctl(m_ctx->handle(), EPOLL_CTL_ADD, listenfd, &evt);
+            if(ctlerr == -1) {
+                throw_errno("can't listen %x", listenfd);
+            }
+            TINYASYNC_LOG("fd = %X", listenfd);            
         }
 
 
@@ -1358,6 +1385,10 @@ namespace tinyasync
         return TimerAwaiter(ctx, elapse);
     }
 
+    static_assert(!std::is_standard_layout_v<Callback>);
+    static_assert(!std::is_standard_layout_v<ConnCallback>);
+    static_assert(std::is_standard_layout_v<Callback2>);
+    static_assert(std::is_standard_layout_v<std::coroutine_handle<> >);
 } // namespace tinyasync
 
 #endif // TINYASYNC_H

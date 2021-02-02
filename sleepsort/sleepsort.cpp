@@ -17,7 +17,7 @@ Task sleep_task(IoContext &ctx, int n) {
 	fflush(stdout);
 
 	if(--nc == 0) {
-		ctx.abort(); 
+		ctx.request_abort(); 
 		printf("\n");
 		fflush(stdout);
 	}

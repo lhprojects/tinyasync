@@ -6,11 +6,33 @@ using namespace tinyasync;
 
 Task echo(IoContext& ctx, Connection conn, Name="echo") {
 
-	for(;;) {
+	bool run = true;
+	char buf[1000];
 
-		char buf[1000];
+	for(;run;) {
+
 		std::size_t nread = co_await conn.async_receive(buf, 1000);
-		co_await conn.async_send(buf, nread);
+		if(nread == 0) {
+			printf("peer shutdown\n");
+			run = false;
+			break;
+		}
+
+		char *send_buf = buf;
+		std::size_t remain = nread;
+		for(;;) {
+			std::size_t nsent = co_await conn.async_send(send_buf, remain);
+			send_buf += nsent;
+			remain -= nsent;
+
+			if(nsent == 0) {
+				printf("peer shutdown\n");
+				run = false;
+				break;
+			} else if(remain == 0) {
+				break;
+			}
+		}
 	}
 }
 
