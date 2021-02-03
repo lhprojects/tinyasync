@@ -31,6 +31,7 @@
 #include <netinet/in.h>
 #include <fcntl.h>
 #include <arpa/inet.h>
+#include <cxxabi.h>
 
 using SystemHandle = int;
 
@@ -120,6 +121,74 @@ namespace tinyasync
             name.push_back(c++);
         }
         return name.c_str();
+    }
+
+
+
+    std::string vformat(char const *fmt, va_list args) {
+        va_list args2;
+        va_copy(args2, args);
+        std::size_t n = vsnprintf(NULL, 0, fmt, args2);
+        
+        char static_buffer[256];
+        std::unique_ptr<char[]> dynamic_buffer;
+        char *b = nullptr;
+        std::size_t bs = 0;
+        if(n > 255) {
+            dynamic_buffer.reset(new char[n+1]);
+            b = dynamic_buffer.get();
+            bs = n + 1;
+        } else{
+            b = static_buffer;
+            bs = 256;
+        }
+        
+        vsnprintf(b, bs, fmt, args);
+        return b;
+    }
+
+    std::string format(char const *fmt, ...) {
+        va_list args;
+        va_start(args, fmt);
+        std::string str = vformat(fmt, args);
+        va_end(args);
+        return str;
+    }
+
+    auto abi_demangle (const char *abi_name)
+    {
+
+        // https://gcc.gnu.org/onlinedocs/libstdc++/libstdc++-html-USERS-4.3/a01696.html
+        // https://stackoverflow.com/questions/4939636/function-to-mangle-demangle-functions
+        int status;
+        char const *name = abi::__cxa_demangle(abi_name, 0 /* output buffer */, 0 /* length */, &status);
+
+        auto deallocator = [](char const *mem) { 
+            if (mem)
+                ::free((void*)mem);
+        };
+
+        // 0: The demangling operation succeeded.
+        if (status != 0) {
+            name = nullptr;
+        }
+
+        std::unique_ptr<const char, decltype(deallocator) > unique_name(name, deallocator);
+        return unique_name;
+    }
+
+    void print_exception(const std::exception& e)
+    {
+        auto type_name = abi_demangle(typeid(e).name());
+        printf("%s: %s\n", type_name.get(), e.what());
+
+        try {           
+            std::rethrow_if_nested(e);
+        } catch(const std::exception& e) {
+            printf("raised from: ");
+            print_exception(e);
+        } catch(...) {
+        }
     }
 
 #ifdef TINYASYNC_TRACE
@@ -287,16 +356,6 @@ namespace tinyasync
         throw std::system_error(errno, std::system_category(), what);
     }
 
-    void throw_errno(char const *fmt, ...) {
-
-        char buf[1000];
-        va_list args;
-        va_start(args, fmt);
-        vsnprintf(buf, sizeof(buf), fmt, args);
-        va_end(args);
-
-        throw std::system_error(errno, std::system_category(), buf);
-    }
 
     struct Task
     {
@@ -403,7 +462,18 @@ namespace tinyasync
                 return { m_continuum };
             }
 
-            void unhandled_exception() { std::terminate(); }
+            void unhandled_exception() { 
+                TINYASYNC_GUARD("Task::FinalAwater::await_resume():");
+                try {
+                    std::rethrow_exception(std::current_exception());
+                } catch(std::exception &e) {
+                    print_exception(e);
+                }
+
+                TINYASYNC_LOG("will be terminated");
+                std::terminate();
+            }
+
             void return_void()
             {
             }
@@ -734,19 +804,27 @@ namespace tinyasync
 
     static_assert(is_trivial_parameter_in_itanium_abi<Protocol>::value);
 
+    enum class AddressType {
+        IpV4,
+        IpV6,
+    };
+
     struct Address
     {
+
         // ip_v32 host bytes order
         Address(uint32_t ip_v32)
         {
-            // set the unused part to zero
+            // set the unused part to zero by the way
             m_v6 = ip_v32;
+            m_address_type = AddressType::IpV4;
         }
 
         // ip_v64 host bytes order
         Address(uint64_t ip_v64)
         {
             m_v6 = ip_v64;
+            m_address_type = AddressType::IpV6;
         }
 
         Address()
@@ -754,6 +832,22 @@ namespace tinyasync
             // if we bind on this address,
             // We will listen to all network card(s)
             m_v6 = INADDR_ANY;
+            m_address_type = AddressType::IpV4;
+        }
+
+        std::string to_string() const {
+            if(m_address_type == AddressType::IpV4) {
+                // host long -> network long -> string
+                // TODO: this is not thread safe
+                in_addr addr;
+                addr.s_addr = htonl(m_v4);
+                char buf[256];
+                inet_ntop(AF_INET, &addr, buf, sizeof(buf));
+                return buf;
+            } else if(m_address_type == AddressType::IpV6) {
+                //TODO: implement
+            }
+            return "";
         }
 
         static Address Any()
@@ -766,6 +860,7 @@ namespace tinyasync
             uint32_t m_v4;
             uint64_t m_v6;
         };
+        AddressType m_address_type;
     };
     static_assert(is_trivial_parameter_in_itanium_abi<Address>::value);
 
@@ -1099,6 +1194,7 @@ namespace tinyasync
         Protocol m_protocol;
         Endpoint m_endpoint;
         NativeHandle m_socket;
+        bool m_added_to_event_pool;
 
     public:
 
@@ -1123,6 +1219,7 @@ namespace tinyasync
             {
                 throw_errno("can't create socket");
             }
+
             if(!blocking)
                 setnonblocking(socketfd);
 
@@ -1134,12 +1231,15 @@ namespace tinyasync
 
         void reset()
         {
-            TINYASYNC_GUARD("SocketMixin::reset");
+            TINYASYNC_GUARD("SocketMixin::reset():");
             if (m_socket)
             {
-                auto ctlerr = epoll_ctl(m_ctx->handle(), EPOLL_CTL_DEL, m_socket, NULL);
-                if(ctlerr == -1) {
-                    throw_errno("can't remove socket %x", m_socket);
+                if(m_added_to_event_pool) {
+                    auto ctlerr = epoll_ctl(m_ctx->handle(), EPOLL_CTL_DEL, m_socket, NULL);
+                    if(ctlerr == -1) {
+                        auto what = format("can't remove (from epoll) socket %x", m_socket);
+                        throw_errno(what);
+                    }
                 }
                 TINYASYNC_LOG("close fd = %d", m_socket);
                 close_handle(m_socket);
@@ -1204,7 +1304,8 @@ namespace tinyasync
             catch (...)
             {
                 reset();
-                throw;
+                auto what = format("accept error %s:%d", endpoint.m_address.to_string().c_str(), (int)(unsigned)endpoint.m_port);
+                std::throw_with_nested(std::runtime_error(what));
             }
         }
 
@@ -1236,7 +1337,7 @@ namespace tinyasync
             auto binderr = ::bind(listenfd, (sockaddr *)&serveraddr, sizeof(serveraddr));
             if (binderr == -1)
             {
-                throw std::system_error(errno, std::system_category(), "can't bind socket");
+                throw_errno(format("can't bind socket, fd = %x", listenfd));
             }
 
             m_endpoint = endpoint;
@@ -1260,8 +1361,9 @@ namespace tinyasync
             evt.events = EPOLLIN;
             auto ctlerr = epoll_ctl(m_ctx->handle(), EPOLL_CTL_ADD, listenfd, &evt);
             if(ctlerr == -1) {
-                throw_errno("can't listen %x", listenfd);
+                throw_errno(format("can't listen %x", listenfd));
             }
+            m_added_to_event_pool = true;
             TINYASYNC_LOG("fd = %X", listenfd);            
         }
 
@@ -1295,7 +1397,7 @@ namespace tinyasync
         int conn_sock = ::accept(m_acceptor->m_socket, NULL, NULL);
         if (conn_sock == -1)
         {
-            throw_errno("can't accept %x", conn_sock);
+            throw_errno(format("can't accept %x", conn_sock));
         }
 
         TINYASYNC_LOG("setnonblocking %d", conn_sock);
@@ -1471,7 +1573,7 @@ namespace tinyasync
                     TINYASYNC_LOG("EINPROGRESS, conn_handle = %X", connfd);
                     // just ok ...
                 } else {
-                    throw_errno("can't connect, conn_handle = %X", connfd);
+                    throw_errno(format("can't connect, conn_handle = %X", connfd));
                 }
             } else if(connerr == 0) {
                 TINYASYNC_LOG("connected, conn_handle = %X", connfd);
@@ -1502,13 +1604,13 @@ namespace tinyasync
         auto connfd = m_connector->m_socket;
 
         if(evt.events & (EPOLLERR|EPOLLHUP)) {
-            throw_errno("error, fd = %d", connfd);
+            throw_errno(format("error, fd = %d", connfd));
         }
 
         int result;
         socklen_t result_len = sizeof(result);
         if (getsockopt(connfd, SOL_SOCKET, SO_ERROR, &result, &result_len) < 0) {
-            throw_errno("getsockopt failed for conn_handle = %d", m_connector->m_socket);
+            throw_errno(format("getsockopt failed for conn_handle = %d", m_connector->m_socket));
         }
         if (result != 0) {
             if(errno == EINPROGRESS) {
@@ -1516,7 +1618,7 @@ namespace tinyasync
                 return;
             } else {
                 TINYASYNC_LOG("bad!, fd = %d", connfd);
-                throw_errno("connect failed for conn_handle = %d", m_connector->m_socket);
+                throw_errno(format("connect failed for conn_handle = %d", m_connector->m_socket));
             }
         }
 
@@ -1531,7 +1633,7 @@ namespace tinyasync
         m_connector->m_awaiter = nullptr;
         auto clterr = epoll_ctl(m_connector->m_ctx->handle(), EPOLL_CTL_DEL, connfd, NULL);
         if(clterr == -1) {
-            throw_errno("can't unregister conn_handle = %d", connfd);
+            throw_errno(format("can't unregister conn_handle = %d", connfd));
         }
         TINYASYNC_LOG("unregister connect for conn_handle = %d", connfd);
     }
@@ -1550,7 +1652,7 @@ namespace tinyasync
         evt.events = EPOLLOUT;
         auto clterr = epoll_ctl(m_connector->m_ctx->handle(), EPOLL_CTL_ADD, m_connector->m_socket, &evt);
         if(clterr == -1) {
-            throw_errno("epoll_ctl(EPOLLOUT) failed for conn_handle = %d", m_connector->m_socket);
+            throw_errno(format("epoll_ctl(EPOLLOUT) failed for conn_handle = %d", m_connector->m_socket));
         }
         TINYASYNC_LOG("register connect for conn_handle = %d", m_connector->m_socket);            
         
