@@ -30,6 +30,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <fcntl.h>
+#include <arpa/inet.h>
 
 using SystemHandle = int;
 
@@ -86,8 +87,17 @@ namespace tinyasync
         }
     };
 
+    class ConnImpl;
+    class ConnAwaiter;
+    class ConnCallback;
 
     class AcceptorImpl;
+    class AcceptorCallback;
+    class AcceptorAwaiter;
+
+    class ConnectorImpl;
+    class ConnectorCallback;
+    class ConnectorAwaiter;
 
     inline std::map<std::coroutine_handle<>, std::string> name_map;
     inline void set_name(std::coroutine_handle<> h, std::string name)
@@ -222,7 +232,21 @@ namespace tinyasync
 
     template <class T>
     struct is_trivial_parameter_in_itanium_abi : std::bool_constant<
-                                                     std::is_trivially_destructible_v<T> && (!std::is_copy_constructible_v<T> || std::is_trivially_copy_constructible_v<T>)&&(!std::is_move_constructible_v<T> || std::is_trivially_move_constructible_v<T>)&&(std::is_copy_constructible_v<T> || std::is_move_constructible_v<T>)>
+                                                     std::is_trivially_destructible_v<T>
+                                                     && (!std::is_copy_constructible_v<T> || std::is_trivially_copy_constructible_v<T>)
+                                                     &&(!std::is_move_constructible_v<T> || std::is_trivially_move_constructible_v<T>)
+                                                     &&(std::is_copy_constructible_v<T> || std::is_move_constructible_v<T>)>
+    {
+
+    };
+
+    template <class T>
+    struct has_trivail_five : std::bool_constant<
+        std::is_trivially_destructible_v<T>
+        &&std::is_trivially_copy_constructible_v<T>
+        && std::is_trivially_copy_assignable_v<T>
+        && std::is_trivially_move_constructible_v<T>
+        && std::is_trivially_move_assignable_v<T> >
     {
     };
 
@@ -562,6 +586,24 @@ namespace tinyasync
 
     using IoEvent = epoll_event;
     
+    std::string ioe2str(IoEvent &evt) {
+        std::string str;
+        str += ((evt.events & EPOLLIN) ? "EPOLLIN " : "");;
+        str += ((evt.events & EPOLLPRI) ? "EPOLLPRI " : "");
+        str += ((evt.events & EPOLLOUT) ? "EPOLLOUT " : "");
+        str += ((evt.events & EPOLLRDNORM) ? "EPOLLRDNORM " : "");
+        str += ((evt.events & EPOLLRDBAND) ? "EPOLLRDBAND " : "");
+        str += ((evt.events & EPOLLWRBAND) ? "EPOLLWRBAND " : "");
+        str += ((evt.events & EPOLLMSG) ? "EPOLLMSG " : "");
+        str += ((evt.events & EPOLLERR) ? "EPOLLERR " : "");
+        str += ((evt.events & EPOLLHUP) ? "EPOLLHUP " : "");
+        str += ((evt.events & EPOLLRDHUP) ? "EPOLLRDHUP " : "");
+        str += ((evt.events & EPOLLEXCLUSIVE) ? "EPOLLEXCLUSIVE " : "");
+        str += ((evt.events & EPOLLWAKEUP) ? "EPOLLWAKEUP " : "");
+        str += ((evt.events & EPOLLONESHOT) ? "EPOLLONESHOT " : "");
+        str += ((evt.events & EPOLLET) ? "EPOLLET " : "");
+        return str;
+    }
 #endif
 
     struct Callback
@@ -669,8 +711,9 @@ namespace tinyasync
 
                 for (auto i = 0; i < nfds; ++i)
                 {
-                    TINYASYNC_LOG("event %d of %d", i, nfds);
                     auto &evt = events[i];
+                    TINYASYNC_LOG("event %d of %d", i, nfds);
+                    TINYASYNC_LOG("event(%x) = %s", evt.events, ioe2str(evt).c_str());
                     auto callback = (Callback *)evt.data.ptr;
                     callback->callback(evt);
                 }
@@ -693,6 +736,19 @@ namespace tinyasync
 
     struct Address
     {
+        // ip_v32 host bytes order
+        Address(uint32_t ip_v32)
+        {
+            // set the unused part to zero
+            m_v6 = ip_v32;
+        }
+
+        // ip_v64 host bytes order
+        Address(uint64_t ip_v64)
+        {
+            m_v6 = ip_v64;
+        }
+
         Address()
         {
             // if we bind on this address,
@@ -707,7 +763,7 @@ namespace tinyasync
 
         union
         {
-            uint64_t m_v4;
+            uint32_t m_v4;
             uint64_t m_v6;
         };
     };
@@ -741,7 +797,6 @@ namespace tinyasync
         }
     }
 
-    struct ConnImpl;
 
     template<class Awaiter, class Buffer>
     class DataAwaiterMixin {
@@ -823,12 +878,6 @@ namespace tinyasync
 
             m_ctx = &ctx;
             m_conn_handle = conn_sock;
-
-            if (conn_sock)
-            {
-                TINYASYNC_LOG("setnonblocking %d", conn_sock);
-                setnonblocking(conn_sock);
-            }
         }
 
         ConnImpl(ConnImpl &&r) = delete;
@@ -841,7 +890,7 @@ namespace tinyasync
             this->reset();
         }
 
-        AsyncReceiveAwaiter async_receive(void *buffer, std::size_t bytes)
+        AsyncReceiveAwaiter async_read(void *buffer, std::size_t bytes)
         {
             TINYASYNC_GUARD("Connection:receive():");
             TINYASYNC_LOG("try to receive %d bytes", bytes);
@@ -866,7 +915,7 @@ namespace tinyasync
         if ((evt.events | EPOLLIN) && m_conn->m_recv_awaiter) {
             // we want to read and it's ready to read
 
-            TINYASYNC_LOG("ready for read for conn_handle %d", m_conn->m_conn_handle);
+            TINYASYNC_LOG("ready to read for conn_handle %d", m_conn->m_conn_handle);
 
             auto awaiter = m_conn->m_recv_awaiter;
             int nbytes = recv(m_conn->m_conn_handle, awaiter->m_buffer_addr, (int)awaiter->m_buffer_size, 0);
@@ -900,9 +949,10 @@ namespace tinyasync
         } else if((evt.events | EPOLLOUT) && m_conn->m_send_awaiter) {
             // we want to send and it's ready to read
 
-            TINYASYNC_LOG("ready for send for conn_handle %d", m_conn->m_conn_handle);
             auto awaiter = m_conn->m_send_awaiter;
+            TINYASYNC_LOG("ready to send for conn_handle %d, %d bytes at %p sending", m_conn->m_conn_handle, (int)awaiter->m_buffer_size, awaiter->m_buffer_addr);
             int nbytes = ::send(m_conn->m_conn_handle, awaiter->m_buffer_addr, (int)awaiter->m_buffer_size, 0);
+            TINYASYNC_LOG("sent %d bytes", nbytes);
 
             if (nbytes < 0)
             {
@@ -1028,9 +1078,9 @@ namespace tinyasync
             m_impl.reset(new ConnImpl(ctx, conn_sock));
         }
 
-        AsyncReceiveAwaiter async_receive(void *buffer, std::size_t bytes)
+        AsyncReceiveAwaiter async_read(void *buffer, std::size_t bytes)
         {
-            return m_impl->async_receive(buffer, bytes);
+            return m_impl->async_read(buffer, bytes);
         }
 
         AsyncSendAwaiter async_send(void const *buffer, std::size_t bytes)
@@ -1041,72 +1091,109 @@ namespace tinyasync
     };
 
 
-    class AcceptAwaiter : public std::suspend_always
+
+    class SocketMixin {
+
+    protected:
+        IoContext *m_ctx;
+        Protocol m_protocol;
+        Endpoint m_endpoint;
+        NativeHandle m_socket;
+
+    public:
+
+
+        NativeHandle native_handle() const noexcept {
+            return m_socket;
+
+        }
+
+        SocketMixin(IoContext &ctx) {
+            m_ctx = &ctx;
+            m_socket = NULL_HANDLE;
+
+        }
+
+        void open(Protocol const &protocol, bool blocking = false)
+        {
+            TINYASYNC_GUARD("SocketMixin::open():");            
+            // PF means protocol
+            auto socketfd = ::socket(PF_INET, SOCK_STREAM, 0);
+            if (socketfd == -1)
+            {
+                throw_errno("can't create socket");
+            }
+            if(!blocking)
+                setnonblocking(socketfd);
+
+            m_socket = socketfd;
+            m_protocol = protocol;
+            TINYASYNC_LOG("create socket %X, nonblocking = %d", socketfd, int(!blocking));            
+        }
+
+
+        void reset()
+        {
+            TINYASYNC_GUARD("SocketMixin::reset");
+            if (m_socket)
+            {
+                auto ctlerr = epoll_ctl(m_ctx->handle(), EPOLL_CTL_DEL, m_socket, NULL);
+                if(ctlerr == -1) {
+                    throw_errno("can't remove socket %x", m_socket);
+                }
+                TINYASYNC_LOG("close fd = %d", m_socket);
+                close_handle(m_socket);
+                m_socket = NULL_HANDLE;
+            }
+        }
+    };
+
+    class AcceptorAwaiter 
     {
 
         friend class AcceptorImpl;
+        friend class AcceptorCallback;
 
         AcceptorImpl *m_acceptor;
-        IoContext *m_ctx;
-        AcceptAwaiter *m_next;
+        AcceptorAwaiter *m_next;
         std::coroutine_handle<> m_suspend_coroutine;
 
     public:
-        AcceptAwaiter(AcceptorImpl &acceptor);
+        bool await_ready() { return false; }
+        AcceptorAwaiter(AcceptorImpl &acceptor);
         void await_suspend(std::coroutine_handle<> h);
         Connection await_resume();
     };
 
-    class AcceptorImpl
+    class AcceptorCallback : Callback
     {
-        friend class AcceptAwaiter;
-
-        struct AcceptCallback : Callback
-        {
-            AcceptorImpl *m_acceptor;
-
-            AcceptCallback(AcceptorImpl *acceptor)
-            {
-                m_acceptor = acceptor;
-            };
-
-            virtual void callback(IoEvent &evt) override
-            {
-                TINYASYNC_GUARD("AcceptCallback::callback():");
-                TINYASYNC_LOG("acceptor %p, awaiter %p", m_acceptor, m_acceptor->m_awaiter);
-                AcceptAwaiter *awaiter = m_acceptor->m_awaiter;
-                if(awaiter) {
-                    awaiter->m_suspend_coroutine.resume();
-                } else {
-                    // this will happen when after accetor.listen() but not yet co_await acceptor.async_accept()
-                    TINYASYNC_LOG("No awaiter found, event ignored, you should have been using level triger to get this event in next time");
-                }
-            }
-
-        };
-
-        IoContext *m_ctx;
-        NativeHandle m_listen_handle;
-        bool m_listen_bind_epoll;
-
-        Protocol m_protocol;
-        Endpoint m_endpoint;
-        std::coroutine_handle<> m_suspend_coroutine;
-        AcceptAwaiter *m_awaiter;
-        AcceptCallback m_callback = this;
+        friend class AcceptorImpl;
+        AcceptorImpl *m_acceptor;
 
     public:
-        AcceptorImpl(IoContext &ctx)
+        AcceptorCallback(AcceptorImpl *acceptor)
         {
-            m_ctx = &ctx;
-            m_listen_handle = NULL_HANDLE;
-            m_listen_bind_epoll = false;
-            m_awaiter = nullptr;
+            m_acceptor = acceptor;
+        };
+
+        virtual void callback(IoEvent &evt) override;
+
+    };
+
+    class AcceptorImpl : SocketMixin
+    {
+        friend class AcceptorAwaiter;
+        friend class AcceptorCallback;
+        AcceptorAwaiter *m_awaiter = nullptr;
+        AcceptorCallback m_callback = this;
+
+    public:
+        AcceptorImpl(IoContext &ctx) : SocketMixin(ctx)
+        {
         }
 
-        AcceptorImpl(IoContext &ctx, Protocol protocol, Endpoint endpoint) : AcceptorImpl(ctx)
+        AcceptorImpl(IoContext &ctx, Protocol const &protocol, Endpoint const &endpoint) : AcceptorImpl(ctx)
         {
-
             try
             {
                 // one effort triple successes
@@ -1116,57 +1203,24 @@ namespace tinyasync
             }
             catch (...)
             {
-                this->reset();
+                reset();
+                throw;
             }
         }
 
         AcceptorImpl(AcceptorImpl &&r) = delete;
-        AcceptorImpl &operator=(AcceptorImpl &&r) = delete;
         AcceptorImpl(AcceptorImpl const &) = delete;
+        AcceptorImpl &operator=(AcceptorImpl &&r) = delete;
         AcceptorImpl &operator=(AcceptorImpl const &) = delete;
-
-        ~AcceptorImpl()
-        {
-            this->reset();
+        ~AcceptorImpl() {
+            reset();
         }
 
-        void reset()
-        {
-
-            if (m_listen_handle)
-            {
-                if (m_listen_bind_epoll)
-                {
-                    // ...
-                }
-
-                close_handle(m_listen_handle);
-                new(this) AcceptorImpl(*m_ctx);
-            }
-        }
-
-        void open(Protocol protocol)
-        {
-            TINYASYNC_GUARD("Acceptor::open():");            
-            // PF means protocol
-            auto listenfd = ::socket(PF_INET, SOCK_STREAM, 0);
-            if (listenfd == -1)
-            {
-                throw std::system_error(errno, std::system_category(), "can't open socket");
-            }
-
-            setnonblocking(listenfd);
-
-            m_listen_handle = listenfd;
-            m_protocol = protocol;
-            TINYASYNC_LOG("listen_handle %X", listenfd);            
-        }
-
-        void bind(Endpoint endpoint)
+        void bind(Endpoint const &endpoint)
         {
 
             TINYASYNC_GUARD("Acceptor::bind():");            
-            int listenfd = m_listen_handle;
+            int listenfd = m_socket;
 
             sockaddr_in serveraddr;
             // do this! no asking!
@@ -1192,7 +1246,7 @@ namespace tinyasync
         void listen()
         {
             TINYASYNC_GUARD("Acceptor::listen():");            
-            int listenfd = m_listen_handle;
+            int listenfd = m_socket;
             int max_pendding_connection = 5;
             int err = ::listen(listenfd, max_pendding_connection);
             if (err == -1)
@@ -1212,50 +1266,72 @@ namespace tinyasync
         }
 
 
-        AcceptAwaiter async_accept()
+        AcceptorAwaiter async_accept()
         {
             return {*this};
         }
     };
 
 
-    AcceptAwaiter::AcceptAwaiter(AcceptorImpl &acceptor) : m_acceptor(&acceptor)
+    AcceptorAwaiter::AcceptorAwaiter(AcceptorImpl &acceptor) : m_acceptor(&acceptor)
+    {
+    }
+
+    void AcceptorAwaiter::await_suspend(std::coroutine_handle<> h)
     {
         assert(!m_acceptor->m_awaiter);
         m_acceptor->m_awaiter = this;
-        m_ctx = m_acceptor->m_ctx;
-    }
-
-    void AcceptAwaiter::await_suspend(std::coroutine_handle<> h)
-    {
         m_suspend_coroutine = h;
     }
 
-    Connection AcceptAwaiter::await_resume()
+    // connection is set nonblocking
+    Connection AcceptorAwaiter::await_resume()
     {
 
         TINYASYNC_GUARD("Acceptor::Awaiter::await_resume():");
         TINYASYNC_LOG("acceptor %p, awaiter %p", &m_acceptor, m_acceptor->m_awaiter);
 
         // it's ready to accept
-        int conn_sock = ::accept(m_acceptor->m_listen_handle, NULL, NULL);
+        int conn_sock = ::accept(m_acceptor->m_socket, NULL, NULL);
         if (conn_sock == -1)
         {
-            throw std::system_error(errno, std::system_category(), "can't accept");
+            throw_errno("can't accept %x", conn_sock);
         }
 
+        TINYASYNC_LOG("setnonblocking %d", conn_sock);
+        setnonblocking(conn_sock);
+
         m_acceptor->m_awaiter = nullptr;
-        return {*m_ctx, conn_sock};
+        return {*m_acceptor->m_ctx, conn_sock};
     }
+
+
+
+    void AcceptorCallback::callback(IoEvent &evt)
+    {
+        TINYASYNC_GUARD("AcceptCallback::callback():");
+        TINYASYNC_LOG("acceptor %p, awaiter %p", m_acceptor, m_acceptor->m_awaiter);
+        AcceptorAwaiter *awaiter = m_acceptor->m_awaiter;
+        if(awaiter) {
+            awaiter->m_suspend_coroutine.resume();
+        } else {
+            // this will happen when after accetor.listen() but not yet co_await acceptor.async_accept()
+            // you should have been using level triger to get this event the next time
+            TINYASYNC_LOG("No awaiter found, event ignored");
+        }
+    }
+
+
 
     class Acceptor {
 
     public:
-        Acceptor(IoContext &ctx, Protocol protocol, Endpoint endpoint)  {
+        Acceptor(IoContext &ctx, Protocol protocol, Endpoint endpoint)
+        {
             m_impl.reset(new AcceptorImpl(ctx, protocol, endpoint));
         }
 
-        AcceptAwaiter async_accept()
+        AcceptorAwaiter async_accept()
         {
             return m_impl->async_accept();
         }
@@ -1266,7 +1342,246 @@ namespace tinyasync
 
 
 
-    struct TimerAwaiter : std::suspend_always
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    class ConnectorCallback : public Callback
+    {  
+        friend class ConnectorAwaiter;
+        friend class ConnectorImpl;
+        ConnectorImpl *m_connector;
+    public:
+        ConnectorCallback(ConnectorImpl &connector) : m_connector(&connector)
+        {
+        }
+        virtual void callback(IoEvent &evt) override;
+
+    };
+
+        
+    class ConnectorAwaiter {
+        friend class ConnectorCallback;
+
+        ConnectorImpl *m_connector;
+        std::coroutine_handle<> m_suspend_coroutine;
+        void unregister(NativeHandle conn_handle);
+
+    public:
+        ConnectorAwaiter(ConnectorImpl &connector) : m_connector(&connector) {
+        }
+
+        constexpr bool await_ready() const { return false; }
+
+        bool await_suspend(std::coroutine_handle<> suspend_coroutine);
+
+        Connection await_resume();
+        
+    };
+
+
+    class ConnectorImpl : public SocketMixin {
+
+        friend class ConnectorAwaiter;
+        friend class ConnectorCallback;
+        ConnectorAwaiter *m_awaiter;
+        ConnectorCallback m_callback = { *this };
+    public:
+    
+        ConnectorImpl(IoContext &ctx) : SocketMixin(ctx) {
+        }
+
+        ConnectorImpl(IoContext &ctx, Protocol const &protocol, Endpoint const &endpoint): ConnectorImpl(ctx) {
+            try {
+                this->open(protocol);
+                m_endpoint = endpoint;
+            } catch(...) {
+                this->reset();
+                throw;
+            }
+        }
+
+        ConnectorImpl(ConnectorImpl const &r) :
+            SocketMixin(static_cast<SocketMixin const &>(r)),
+            m_callback(*this) {     
+            m_awaiter = r.m_awaiter;
+            // don't copy, m_callback is fine
+            // m_callback = r.m_callback;
+        }
+
+        ConnectorImpl &operator=(ConnectorImpl const &r) {
+            static_cast<SocketMixin &>(*this) = static_cast<SocketMixin const &>(r);
+            m_awaiter = r.m_awaiter;
+            m_callback = r.m_callback;
+            m_callback.m_connector = this;
+            return *this;
+        }
+
+        // don't reset
+        ~ConnectorImpl() = default;
+
+        ConnectorAwaiter async_connect() {
+            return { *this };
+        }
+
+        ConnectorAwaiter operator co_await() {
+            return async_connect();
+        }
+
+    private:
+
+        bool connect(Endpoint const &endpoint)
+        {
+
+            TINYASYNC_GUARD("Connector::connect():");            
+            int connfd = m_socket;
+
+            sockaddr_in serveraddr;
+            memset(&serveraddr, 0, sizeof(serveraddr));
+            // AF means address
+            serveraddr.sin_family = AF_INET;
+            // hton*: host bytes order to network bytes order
+            // *l: uint32
+            // *s: uint16
+            serveraddr.sin_port = htons(endpoint.m_port);
+            serveraddr.sin_addr.s_addr = htonl(endpoint.m_address.m_v4);
+
+            bool connected = false;
+            auto connerr = ::connect(connfd, (sockaddr *)&serveraddr, sizeof(serveraddr));
+            if (connerr == -1)
+            {
+                if(errno == EINPROGRESS) {
+                    TINYASYNC_LOG("EINPROGRESS, conn_handle = %X", connfd);
+                    // just ok ...
+                } else {
+                    throw_errno("can't connect, conn_handle = %X", connfd);
+                }
+            } else if(connerr == 0) {
+                TINYASYNC_LOG("connected, conn_handle = %X", connfd);
+                // it's connected ??!!
+                connected = true;
+            }
+
+            TINYASYNC_LOG("conn_handle = %X", connfd);
+            m_endpoint = endpoint;
+            return connected;
+        }
+
+
+    };
+
+
+    ConnectorImpl async_connect(IoContext &ctx, Protocol const &protocol, Endpoint const &endpoint)
+    {
+        return ConnectorImpl(ctx, protocol, endpoint);
+    }
+
+    void ConnectorCallback::callback(IoEvent &evt)
+    {
+        TINYASYNC_GUARD("ConnectorCallback::callback():");
+        assert(m_connector);
+        assert(m_connector->m_awaiter);
+
+        auto connfd = m_connector->m_socket;
+
+        if(evt.events & (EPOLLERR|EPOLLHUP)) {
+            throw_errno("error, fd = %d", connfd);
+        }
+
+        int result;
+        socklen_t result_len = sizeof(result);
+        if (getsockopt(connfd, SOL_SOCKET, SO_ERROR, &result, &result_len) < 0) {
+            throw_errno("getsockopt failed for conn_handle = %d", m_connector->m_socket);
+        }
+        if (result != 0) {
+            if(errno == EINPROGRESS) {
+                TINYASYNC_LOG("EINPROGRESS, fd = %d", connfd);
+                return;
+            } else {
+                TINYASYNC_LOG("bad!, fd = %d", connfd);
+                throw_errno("connect failed for conn_handle = %d", m_connector->m_socket);
+            }
+        }
+
+        TINYASYNC_LOG("connected");
+        m_connector->m_awaiter->m_suspend_coroutine.resume();
+
+    }
+
+
+    void ConnectorAwaiter::unregister(NativeHandle conn_handle) {
+        auto connfd = conn_handle;
+        m_connector->m_awaiter = nullptr;
+        auto clterr = epoll_ctl(m_connector->m_ctx->handle(), EPOLL_CTL_DEL, connfd, NULL);
+        if(clterr == -1) {
+            throw_errno("can't unregister conn_handle = %d", connfd);
+        }
+        TINYASYNC_LOG("unregister connect for conn_handle = %d", connfd);
+    }
+
+    bool ConnectorAwaiter::await_suspend(std::coroutine_handle<> suspend_coroutine) {
+        TINYASYNC_LOG("ConnectorAwaiter::await_suspend():");            
+        m_suspend_coroutine = suspend_coroutine;
+        auto connfd = m_connector->m_socket;
+
+        assert(!m_connector->m_awaiter);
+        m_connector->m_awaiter = this;
+
+        epoll_event evt;
+        evt.data.ptr = &m_connector->m_callback;           
+        // level triger by default
+        evt.events = EPOLLOUT;
+        auto clterr = epoll_ctl(m_connector->m_ctx->handle(), EPOLL_CTL_ADD, m_connector->m_socket, &evt);
+        if(clterr == -1) {
+            throw_errno("epoll_ctl(EPOLLOUT) failed for conn_handle = %d", m_connector->m_socket);
+        }
+        TINYASYNC_LOG("register connect for conn_handle = %d", m_connector->m_socket);            
+        
+        if(m_connector->connect(m_connector->m_endpoint)) {
+            this->unregister(connfd);
+            return false;
+        }
+        return true;
+    }
+
+
+    Connection ConnectorAwaiter::await_resume() {
+        TINYASYNC_GUARD("ConnectorAwaiter::await_resume():");
+        auto connfd = m_connector->m_socket;
+        //this->unregister(connfd);
+        return { *m_connector->m_ctx, m_connector->m_socket };
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+    class TimerAwaiter
     {
 
         IoContext &m_ctx;
@@ -1274,10 +1589,14 @@ namespace tinyasync
         NativeHandle m_timer_handle = 0;
         std::coroutine_handle<> m_suspend_coroutine;
 
+    public:
         // elapse in micro-second
         TimerAwaiter(IoContext &ctx, uint64_t elapse) : m_ctx(ctx), m_elapse(elapse)
         {
         }
+
+        constexpr bool await_ready() const noexcept { return false; }
+        constexpr void await_resume() const noexcept { }
 
 #ifdef _WIN32
         static void CALLBACK callback(LPVOID lpArg, DWORD dwTimerLowValue, DWORD dwTimerHighValue)
@@ -1310,6 +1629,7 @@ namespace tinyasync
             }
         }
 #elif defined(__unix__)
+
         struct TimerCallback : Callback
         {
 
@@ -1385,8 +1705,12 @@ namespace tinyasync
         return TimerAwaiter(ctx, elapse);
     }
 
-    static_assert(!std::is_standard_layout_v<Callback>);
-    static_assert(!std::is_standard_layout_v<ConnCallback>);
+    static_assert(has_trivail_five<Endpoint>::value);
+    static_assert(has_trivail_five<Address>::value);
+    static_assert(has_trivail_five<Protocol>::value);
+    static_assert(has_trivail_five<SocketMixin>::value);
+    //static_assert(!std::is_standard_layout_v<Callback>);
+    //static_assert(!std::is_standard_layout_v<ConnCallback>);
     static_assert(std::is_standard_layout_v<Callback2>);
     static_assert(std::is_standard_layout_v<std::coroutine_handle<> >);
 } // namespace tinyasync

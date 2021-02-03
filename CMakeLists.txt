@@ -12,4 +12,5 @@ else()
 endif()
 
 add_subdirectory("echo_server")
-add_subdirectory ("sleepsort")
+add_subdirectory("sleepsort")
+add_subdirectory("http_client")
