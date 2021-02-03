@@ -23,6 +23,7 @@
 
 #elif defined(__unix__)
 
+#include <netdb.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/epoll.h>
@@ -40,53 +41,40 @@ using SystemHandle = int;
 namespace tinyasync
 {
 
-#ifdef _WIN32
 
+#ifdef _WIN32
     using NativeHandle = HANDLE;
+    using NativeSocket = SOCKET;
 
-#elif defined(__unix__)
-
-    using NativeHandle = int;
-
-#endif
-
-    void close_handle(NativeHandle h)
-    {
-#ifdef _WIN32
-        Close(h);
-
-#elif defined(__unix__)
-
-        close(h);
-
-#endif
+    // https://docs.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle
+    // do not mixing using close_handle and close_socket
+    int close_socket (NativeSocket socket) {
+        return ::closesocket(socket);
     }
 
-    NativeHandle const NULL_HANDLE = 0;
-
-    struct AutoClose
+    BOOL close_handle(NativeHandle h)
     {
+        return ::CloseHandle(h);
+    }
 
-        NativeHandle m_h;
-        AutoClose(NativeHandle h) noexcept : m_h(h)
-        {
-        }
+#elif defined(__unix__)
+    using NativeHandle = int;
+    using NativeSocket = int;
 
-        NativeHandle release() noexcept
-        {
-            auto h = m_h;
-            m_h = NULL_HANDLE;
-            return h;
-        }
+    int close_socket(NativeSocket h)
+    {        
+        return ::close(h);
+    }
 
-        ~AutoClose() noexcept
-        {
-            if (m_h)
-            {
-                close_handle(m_h);
-            }
-        }
-    };
+    int close_handle(NativeHandle h)
+    {        
+        return ::close(h);
+    }
+
+
+#endif
+
+    NativeHandle const NULL_HANDLE = 0;
 
     class ConnImpl;
     class ConnAwaiter;
@@ -155,32 +143,36 @@ namespace tinyasync
         return str;
     }
 
-    auto abi_demangle (const char *abi_name)
+
+    std::string abi_demangle (const char *abi_name)
     {
 
+#ifdef _WIN32
+        return abi_name;
+#else
         // https://gcc.gnu.org/onlinedocs/libstdc++/libstdc++-html-USERS-4.3/a01696.html
         // https://stackoverflow.com/questions/4939636/function-to-mangle-demangle-functions
         int status;
         char const *name = abi::__cxa_demangle(abi_name, 0 /* output buffer */, 0 /* length */, &status);
 
-        auto deallocator = [](char const *mem) { 
-            if (mem)
-                ::free((void*)mem);
-        };
+        std::string ret;
 
         // 0: The demangling operation succeeded.
         if (status != 0) {
-            name = nullptr;
+            ret = "<unknown-type-name>";
+        } else {
+            ret = name;
+            ::free((void*)name);
         }
 
-        std::unique_ptr<const char, decltype(deallocator) > unique_name(name, deallocator);
-        return unique_name;
+        return ret;
+#endif
     }
 
     void print_exception(const std::exception& e)
     {
         auto type_name = abi_demangle(typeid(e).name());
-        printf("%s: %s\n", type_name.get(), e.what());
+        printf("%s: %s\n", type_name.c_str(), e.what());
 
         try {           
             std::rethrow_if_nested(e);
@@ -351,10 +343,21 @@ namespace tinyasync
     }
 
 
-
+#ifdef _WIN32
+    void throw_WASError(std::string const &what, int ec = WSAGetLastError()) {
+        throw std::system_error(ec, std::system_category(), what);
+    }
+    void throw_error(std::string const &what, int ec  = WSAGetLastError()) {
+        throw_WASError(what);
+    }
+#else
     void throw_errno(std::string const &what) {
         throw std::system_error(errno, std::system_category(), what);
     }
+    void throw_error(std::string const &what) {
+        throw_errno(what);
+    }
+#endif
 
 
     struct Task
@@ -652,7 +655,10 @@ namespace tinyasync
         co_await awaitble;
     }
 
-#if defined(__unix__)
+#if defined(__WIN32)
+    struct IoEvent {
+    };
+#elif defined(__unix__)
 
     using IoEvent = epoll_event;
     
@@ -675,25 +681,48 @@ namespace tinyasync
         return str;
     }
 #endif
-
+    
     struct Callback
     {
-        using callback_base_type = Callback;
-        virtual void callback(IoEvent &evt) = 0;
-    };
-    
-    struct Callback2
-    {
-        using callback_base_type = Callback2;
-        // virtual void callback(IoEvent &evt) = 0;        
-
         void callback(IoEvent &evt) {
             this->m_callback(this, evt);
         }
 
-        using CallbackPtr = void (*)(callback_base_type *callback, IoEvent &);
+        // we don't use virtual table for two reasons
+        //     1. virtual function let Callback to be non-standard_layout, though we have solution without offsetof using inherit
+        //     2. we have only one function ptr, thus ... we can save a memory load without virtual functions table
+        using CallbackPtr = void (*)(Callback *self, IoEvent &);
+
         CallbackPtr m_callback;
+
+#ifdef __WIN32
+        OVERLAPPED m_overlapped;
+
+        static Callback *from_overlapped(OVERLAPPED *o) {
+            constexpr std::size_t offset = offsetof(callback_base_type, m_overlapped);
+            callback_base_type *callback = reinterpret_cast<callback_base_type*>((reinterpret_cast<char*>(o) - offset));
+            return callback;
+        }
+#endif
     };
+
+    // requried by offsetof
+    static_assert(std::is_standard_layout_v<Callback>);
+
+    template<class SubclassCallback>
+    struct CallbackMixin : Callback
+    {
+        CallbackMixin() {
+            m_callback =  &invoke_impl_callback;
+        }
+
+        static void invoke_impl_callback(Callback *this_, IoEvent &evt) {
+            // invoke subclass' on_callback method
+            SubclassCallback* subclass_this = static_cast<SubclassCallback*>(this_);
+            subclass_this->on_callback(evt);
+        }
+    };
+
 
     struct TimerAwaiter;
     struct IoContext;
@@ -707,7 +736,11 @@ namespace tinyasync
         IoContext()
         {
 #ifdef _WIN32
-
+            WSADATA wsaData;
+            int iResult = WSAStartup(MAKEWORD(2,2), &wsaData);
+            if (iResult != NO_ERROR) {
+                throw_WASError("WSAStartup failed with error ", iResult);
+            }
 #elif defined(__unix__)
 
             auto fd = epoll_create1(EPOLL_CLOEXEC);
@@ -738,6 +771,8 @@ namespace tinyasync
         {
 #ifdef _WIN32
 
+
+            WSACleanup();
 #elif defined(__unix__)
             close_handle(m_native_handle);
 #endif
@@ -929,7 +964,7 @@ namespace tinyasync
         std::size_t await_resume();
     };
 
-    struct ConnCallback : Callback
+    struct ConnCallback : CallbackMixin<ConnCallback>
     {
         ConnImpl *m_conn;
         ConnCallback(ConnImpl *conn) : m_conn(conn)
@@ -937,7 +972,7 @@ namespace tinyasync
             TINYASYNC_GUARD("ConnCallback::ConnCallback():");
             TINYASYNC_LOG("conn %p", conn);
         }
-        void callback(IoEvent&) override;
+        void on_callback(IoEvent&);
 
     };
 
@@ -960,7 +995,7 @@ namespace tinyasync
             if (m_conn_handle)
             {
                 // ubind from epool ...
-                close_handle(m_conn_handle);
+                close_socket(m_conn_handle);
                 m_conn_handle = NULL_HANDLE;
 
                 m_conn_handle = NULL_HANDLE;
@@ -1003,7 +1038,7 @@ namespace tinyasync
     
     };
 
-    void ConnCallback::callback(IoEvent &evt)
+    void ConnCallback::on_callback(IoEvent &evt)
     {
         TINYASYNC_GUARD("ConnCallback::callback():");
 
@@ -1242,10 +1277,25 @@ namespace tinyasync
                     }
                 }
                 TINYASYNC_LOG("close fd = %d", m_socket);
-                close_handle(m_socket);
+                close_socket(m_socket);
                 m_socket = NULL_HANDLE;
             }
         }
+    };
+
+
+    class AcceptorCallback : public CallbackMixin<AcceptorCallback>
+    {
+        friend class AcceptorImpl;
+        AcceptorImpl *m_acceptor;
+    public:
+        AcceptorCallback(AcceptorImpl *acceptor)
+        {
+            m_acceptor = acceptor;
+        };
+
+        void on_callback(IoEvent &evt);
+
     };
 
     class AcceptorAwaiter 
@@ -1263,21 +1313,6 @@ namespace tinyasync
         AcceptorAwaiter(AcceptorImpl &acceptor);
         void await_suspend(std::coroutine_handle<> h);
         Connection await_resume();
-    };
-
-    class AcceptorCallback : Callback
-    {
-        friend class AcceptorImpl;
-        AcceptorImpl *m_acceptor;
-
-    public:
-        AcceptorCallback(AcceptorImpl *acceptor)
-        {
-            m_acceptor = acceptor;
-        };
-
-        virtual void callback(IoEvent &evt) override;
-
     };
 
     class AcceptorImpl : SocketMixin
@@ -1409,7 +1444,7 @@ namespace tinyasync
 
 
 
-    void AcceptorCallback::callback(IoEvent &evt)
+    void AcceptorCallback::on_callback(IoEvent &evt)
     {
         TINYASYNC_GUARD("AcceptCallback::callback():");
         TINYASYNC_LOG("acceptor %p, awaiter %p", m_acceptor, m_acceptor->m_awaiter);
@@ -1465,7 +1500,7 @@ namespace tinyasync
 
 
 
-    class ConnectorCallback : public Callback
+    class ConnectorCallback : public CallbackMixin<ConnectorCallback>
     {  
         friend class ConnectorAwaiter;
         friend class ConnectorImpl;
@@ -1474,7 +1509,7 @@ namespace tinyasync
         ConnectorCallback(ConnectorImpl &connector) : m_connector(&connector)
         {
         }
-        virtual void callback(IoEvent &evt) override;
+        void on_callback(IoEvent &evt);
 
     };
 
@@ -1595,7 +1630,7 @@ namespace tinyasync
         return ConnectorImpl(ctx, protocol, endpoint);
     }
 
-    void ConnectorCallback::callback(IoEvent &evt)
+    void ConnectorCallback::on_callback(IoEvent &evt)
     {
         TINYASYNC_GUARD("ConnectorCallback::callback():");
         assert(m_connector);
@@ -1732,7 +1767,7 @@ namespace tinyasync
         }
 #elif defined(__unix__)
 
-        struct TimerCallback : Callback
+        struct TimerCallback : CallbackMixin<TimerCallback>
         {
 
             TimerCallback(TimerAwaiter *awaiter) : m_awaiter(awaiter)
@@ -1741,7 +1776,7 @@ namespace tinyasync
 
             TimerAwaiter *m_awaiter;
 
-            virtual void callback(IoEvent &evt) override
+            void on_callback(IoEvent &evt)
             {
 
                 // remove from epoll list
@@ -1772,30 +1807,34 @@ namespace tinyasync
             auto fd = timerfd_create(CLOCK_REALTIME, 0);
             if (fd == -1)
             {
-                throw std::system_error(errno, std::system_category(), "can't create timer");
-            }
-            AutoClose guad(fd);
-
-            auto fd2 = timerfd_settime(fd, 0, &time, NULL);
-            if (fd2 == -1)
-            {
-                throw std::system_error(errno, std::system_category(), "can't set timer");
+                throw_errno("can't create timer");
             }
 
-            auto epfd = m_ctx.handle();
-            assert(epfd);
+            try {
+                auto fd2 = timerfd_settime(fd, 0, &time, NULL);
+                if (fd2 == -1)
+                {
+                    throw_errno("can't set timer");
+                }
 
-            epoll_event evt;
-            evt.data.ptr = &m_callback;
-            evt.events = EPOLLIN;
-            auto fd3 = epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &evt);
+                auto epfd = m_ctx.handle();
+                assert(epfd);
 
-            if (fd3 == -1)
-            {
-                throw std::system_error(errno, std::system_category(), "can't bind timer fd with epoll");
+                epoll_event evt;
+                evt.data.ptr = &m_callback;
+                evt.events = EPOLLIN;
+                auto fd3 = epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &evt);
+
+                if (fd3 == -1)
+                {
+                    throw_errno("can't bind timer fd with epoll");
+                }
+
+            } catch(...) {
+                close_handle(m_timer_handle);
+                throw;
             }
-
-            m_timer_handle = guad.release();
+            m_timer_handle = fd;
         }
 
 #endif
@@ -1813,7 +1852,7 @@ namespace tinyasync
     static_assert(has_trivail_five<SocketMixin>::value);
     //static_assert(!std::is_standard_layout_v<Callback>);
     //static_assert(!std::is_standard_layout_v<ConnCallback>);
-    static_assert(std::is_standard_layout_v<Callback2>);
+    static_assert(std::is_standard_layout_v<Callback>);
     static_assert(std::is_standard_layout_v<std::coroutine_handle<> >);
 } // namespace tinyasync
 

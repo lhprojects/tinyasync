@@ -1,6 +1,5 @@
 //#define TINYASYNC_TRACE
 #include <tinyasync/tinyasync.h>
-#include <netdb.h>
 
 using namespace tinyasync;
 
