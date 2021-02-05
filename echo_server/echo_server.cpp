@@ -31,7 +31,7 @@ Task echo_once(Connection &conn, bool &run, Name = "echo_once") {
 	}
 }
 
-Spawn handle_connection(IoContext& ctx, Connection conn, Name="handle_connection") {
+Task handle_connection(IoContext& ctx, Connection conn, Name="handle_connection") {
 	bool run = true;
 	for(;run;) {
 		// suspend initially
@@ -55,7 +55,7 @@ Task listen(IoContext &ctx, Name="listen") {
 		// where this coroutine is blocked again
 		// the handle_connection will be resumed if coresponding io of handle_connection is ready
 		// note `handle_connection` returns Spawn
-		handle_connection(ctx, std::move(conn));
+		co_spawn(handle_connection(ctx, std::move(conn)));
 	}
 
 }
@@ -69,7 +69,7 @@ void server() {
 	// where we will resume the coroutine when io is ready
 	// note `listen` returns Task
 	// you can let listen return Spawn, and replace co_spawn(listen()) with listen()	
-	co_spawn(listen(ctx), "co_spawn listen");
+	co_spawn(listen(ctx));
 
 	TINYASYNC_LOG("run");
 	ctx.run();

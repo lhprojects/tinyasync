@@ -14,17 +14,17 @@ Task task(Name = "task") {
 
     suspended_coroutine = co_await this_coroutine<>();
     co_await std::suspend_always{};
-    printf("recv %d", data_);
+    printf("recv %d\n", data_);
 }
 
-Spawn spawn_task(Name = "spawn_task") {
+Task spawn_task(Name = "spawn_task") {
     co_await task();
 }
 
 
 int main() {
 
-	spawn_task();
+	co_spawn(spawn_task());
 
 	printf("io 1 waiting\n");
 	sleep_seconds(1);

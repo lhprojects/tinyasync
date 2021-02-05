@@ -3,7 +3,7 @@
 
 using namespace tinyasync;
 
-Spawn do_download(IoContext &ctx, Name="download") {
+Task do_download(IoContext &ctx, Name="download") {
 
 
     struct addrinfo* addr;

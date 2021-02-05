@@ -1,20 +1,20 @@
-#define TINYASYNC_TRACE
-
-//#define TINYASYNC_THROW_ON_OPEN
+//#define TINYASYNC_TRACE
 
 #include <tinyasync/tinyasync.h>
 #include <string_view>
 
 using namespace tinyasync;
 
-Spawn handle_connection(IoContext& ctx, Connection conn, Name="handle_connection") {
+
+Task do_handle_connection(IoContext& ctx, Connection conn, Name="do_handle_connection") {
+
 	
 	std::string buffer;
 	for(;;) {
 		char b[1000];
 		auto nread = co_await conn.async_read(b, 1000);
 		if(nread == 0) {
-			throw std::runtime_error("recv error");
+			throw std::runtime_error("remote closed");
 		}
 		buffer.append(b, b+nread);
 		if(buffer.find("\r\n\r\n") || buffer.size() > 1000*4) {
@@ -68,26 +68,29 @@ Spawn handle_connection(IoContext& ctx, Connection conn, Name="handle_connection
 
 }
 
+Task handle_connection(IoContext& ctx, Connection conn, Name="handle_connection") {
+	try{
+		co_await do_handle_connection(ctx, std::move(conn));
+	} catch(...) {
+;		printf("%s", to_string(std::current_exception()).c_str());
+		printf("connection will be closed\n");
+	}
+}
 Task listen(IoContext &ctx, Name="listen") {
 
 	Acceptor acceptor(ctx, Protocol::ip_v4(), Endpoint(Address::Any(), 8899));
 
 	for (;;) {
 		Connection conn = co_await acceptor.async_accept();
-		try {
-			handle_connection(ctx, std::move(conn));
-		} catch(...) {
-			printf("error in handle connection\n");
-		}
+		ctx.post_task(std::move(handle_connection(ctx, std::move(conn))));
 	}
-
 }
 
 void server() {	
 	TINYASYNC_GUARD("server(): ");
 
 	IoContext ctx;
-	co_spawn(listen(ctx), "co_spawn listen");
+	co_spawn(listen(ctx));
 
 	TINYASYNC_LOG("run");
 	ctx.run();
