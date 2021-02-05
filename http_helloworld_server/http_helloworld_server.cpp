@@ -1,4 +1,7 @@
 #define TINYASYNC_TRACE
+
+//#define TINYASYNC_THROW_ON_OPEN
+
 #include <tinyasync/tinyasync.h>
 #include <string_view>
 
@@ -81,7 +84,7 @@ Task listen(IoContext &ctx, Name="listen") {
 }
 
 void server() {	
-	TINYASYNC_GUARD("server():");
+	TINYASYNC_GUARD("server(): ");
 
 	IoContext ctx;
 	co_spawn(listen(ctx), "co_spawn listen");
@@ -90,12 +93,14 @@ void server() {
 	ctx.run();
 }
 
+
 int main()
 {
+
 	try {
 		server();
-	} catch(std::exception &e) {
-		print_exception(e);
+	} catch(...) {
+		printf("%s\n", to_string(std::current_exception()).c_str());
 	}
 	return 0;
 }

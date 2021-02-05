@@ -5,6 +5,7 @@
 #include <exception>
 #include <utility>
 #include <map>
+#include <unordered_map>
 #include <string>
 #include <vector>
 #include <type_traits>
@@ -19,7 +20,9 @@
 
 #ifdef _WIN32
 
+#include <Winsock2.h>
 #include <Windows.h>
+#pragma comment(lib, "Ws2_32.lib") 
 
 #elif defined(__unix__)
 
@@ -41,6 +44,23 @@ using SystemHandle = int;
 namespace tinyasync
 {
 
+    std::string vformat(char const *fmt, va_list args) {
+        va_list args2;
+        va_copy(args2, args);        
+        std::size_t n = vsnprintf(NULL, 0, fmt, args2);
+        std::string ret;
+        ret.resize(n);
+        vsnprintf(ret.data(), ret.size()+1, fmt, args);
+        return ret;
+    }
+
+    std::string format(char const *fmt, ...) {
+        va_list args;
+        va_start(args, fmt);
+        std::string str = vformat(fmt, args);
+        va_end(args);
+        return str;
+    }
 
 #ifdef _WIN32
     using NativeHandle = HANDLE;
@@ -48,16 +68,30 @@ namespace tinyasync
 
     // https://docs.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle
     // do not mixing using close_handle and close_socket
-    int close_socket (NativeSocket socket) {
+    inline int close_socket(NativeSocket socket) {
         return ::closesocket(socket);
     }
 
-    BOOL close_handle(NativeHandle h)
+    inline BOOL close_handle(NativeHandle h)
     {
         return ::CloseHandle(h);
     }
 
+
+    void sleep_microseconds(uint64_t microseconds) {
+
+        DWORD miliseconds;
+        if (microseconds == UINT64_MAX) {
+            miliseconds = INFINITE;
+        } else {
+            uint64_t miliseconds = (microseconds / 1000);
+            assert((DWORD)(miliseconds) == miliseconds);
+        }
+        ::Sleep(miliseconds);
+    }
+
 #elif defined(__unix__)
+
     using NativeHandle = int;
     using NativeSocket = int;
 
@@ -71,10 +105,49 @@ namespace tinyasync
         return ::close(h);
     }
 
+    timespec to_timespec(uint64_t microseconds) {
+
+        timespec time;
+        auto seconds = microseconds/(1000*1000);
+        auto nanos = (microseconds - seconds*(1000*1000))*1000;
+
+        time.tv_sec = seconds;
+        time.tv_nsec = nanos;
+
+        return time;
+    }
+
+    void sleep_microseconds(uint64_t microseconds) {
+        auto timespec = to_timespec(microseconds);
+        ::nanosleep(&timespec, NULL);
+    }
+
+    std::string abi_name_demangle (const char *abi_name)
+    {
+        // https://gcc.gnu.org/onlinedocs/libstdc++/libstdc++-html-USERS-4.3/a01696.html
+        // https://stackoverflow.com/questions/4939636/function-to-mangle-demangle-functions
+        int status;
+        char const *name = abi::__cxa_demangle(abi_name, NULL, 0, &status);
+
+        std::string ret;
+        // 0: The demangling operation succeeded.
+        if (status != 0) {
+            ret = "<unknown-type-name>";
+        } else {
+            ret = name;
+            ::free((void*)name);
+        }
+        return ret;
+    }
 
 #endif
 
+    void sleep_seconds(uint64_t seconds) {
+        sleep_microseconds(1000*1000*seconds);
+    }
+
     NativeHandle const NULL_HANDLE = 0;
+    NativeSocket const NULL_SOCKET = NativeSocket(0);
 
     class ConnImpl;
     class ConnAwaiter;
@@ -95,7 +168,7 @@ namespace tinyasync
         name_ = std::move(name);
     }
 
-    inline char const *name(std::coroutine_handle<> h)
+    inline char const *c_name(std::coroutine_handle<> h)
     {
         if (h == nullptr)
             return "null";
@@ -103,84 +176,107 @@ namespace tinyasync
             return "noop";
 
         auto &name = name_map[h];
-        if (name.empty())
-        {
-            static char c = 'A';
-            name.push_back(c++);
+        if(name.empty()) {
+            name = format("%p", h.address());
         }
         return name.c_str();
     }
 
-
-
-    std::string vformat(char const *fmt, va_list args) {
-        va_list args2;
-        va_copy(args2, args);
-        std::size_t n = vsnprintf(NULL, 0, fmt, args2);
-        
-        char static_buffer[256];
-        std::unique_ptr<char[]> dynamic_buffer;
-        char *b = nullptr;
-        std::size_t bs = 0;
-        if(n > 255) {
-            dynamic_buffer.reset(new char[n+1]);
-            b = dynamic_buffer.get();
-            bs = n + 1;
-        } else{
-            b = static_buffer;
-            bs = 256;
+    using TypeInfoRef = std::reference_wrapper<const std::type_info>;
+    struct TypeInfoRefHahser {
+        std::size_t operator()(TypeInfoRef info) const {
+            return info.get().hash_code();
         }
-        
-        vsnprintf(b, bs, fmt, args);
-        return b;
-    }
-
-    std::string format(char const *fmt, ...) {
-        va_list args;
-        va_start(args, fmt);
-        std::string str = vformat(fmt, args);
-        va_end(args);
-        return str;
-    }
-
-
-    std::string abi_demangle (const char *abi_name)
-    {
+    };
+    struct TypeInfoRefEqualer {
+        std::size_t operator()(TypeInfoRef l, TypeInfoRef r) const {
+            return l.get() == r.get();
+        }
+    };
+    
+    inline char const *c_name(std::type_info const &info) {
 
 #ifdef _WIN32
-        return abi_name;
-#else
-        // https://gcc.gnu.org/onlinedocs/libstdc++/libstdc++-html-USERS-4.3/a01696.html
-        // https://stackoverflow.com/questions/4939636/function-to-mangle-demangle-functions
-        int status;
-        char const *name = abi::__cxa_demangle(abi_name, 0 /* output buffer */, 0 /* length */, &status);
+        return info.name();
+#elif defined(__unix__)
 
-        std::string ret;
-
-        // 0: The demangling operation succeeded.
-        if (status != 0) {
-            ret = "<unknown-type-name>";
-        } else {
-            ret = name;
-            ::free((void*)name);
+        static std::unordered_map<TypeInfoRef, std::string, TypeInfoRefHahser, TypeInfoRefEqualer> map;
+        auto &name = map[std::ref(info)];
+        if(name.empty()) {
+            name = abi_name_demangle(info.name());
         }
-
-        return ret;
+        return name.c_str();
 #endif
     }
 
-    void print_exception(const std::exception& e)
-    {
-        auto type_name = abi_demangle(typeid(e).name());
-        printf("%s: %s\n", type_name.c_str(), e.what());
-
-        try {           
-            std::rethrow_if_nested(e);
-        } catch(const std::exception& e) {
-            printf("raised from: ");
-            print_exception(e);
-        } catch(...) {
+    inline char const *handle_c_str(NativeHandle handle) {
+        static std::map<NativeHandle, std::string> handle_map;
+        auto &str = handle_map[handle];
+        if(str.empty()) {
+#ifdef _WIN32
+            str = format("%p", handle);
+#elif defined(__unix__)
+            str = format("%d", handle);
+#endif
         }
+        return str.c_str();
+    }
+
+    inline char const *socket_c_str(NativeSocket handle) {
+        return handle_c_str((NativeHandle)handle);
+    }
+
+    void to_string_to(std::exception_ptr const &e, std::string &string_builder)
+    {
+        try {
+            std::rethrow_exception(e);
+        } catch(const std::exception& e_) {
+            string_builder += format("%s: what: %s\n", c_name(typeid(e_)), e_.what());
+
+            // its endpoint class could be _Nest_exception
+            try {
+                std::rethrow_if_nested(e_);
+            } catch(...) {  
+                string_builder += "raised from: ";
+                to_string_to(std::current_exception(), string_builder);
+            }
+        } catch(const std::string &e_) {
+            // should not throw std::string
+            // I will print it out anyway
+            string_builder += format("%s: %s\n", c_name(typeid(e_)), e_.c_str());
+
+            // std::rethrow_if_nested not work for non-polymorphic class exception
+            // e_ may have nested exception
+            // but we don't kown
+        } catch(...) {
+            string_builder += "<unkown type>\n";
+        }
+    }
+
+    template<class Promise = void>
+    struct ThisCoroutineAwaiter : std::suspend_always {
+
+        bool await_suspend(std::coroutine_handle<Promise> h) {
+            m_coroutine = h;
+            return false;
+        }
+        std::coroutine_handle<Promise> await_resume() {
+            return m_coroutine;
+        }
+        std::coroutine_handle<Promise> m_coroutine = nullptr;
+    };
+
+    
+    template<class Promise = void>
+    ThisCoroutineAwaiter<Promise> this_coroutine() {
+        return { };
+    };
+
+    std::string to_string(std::exception_ptr const &e)
+    {
+        std::string sb;
+        to_string_to(e, sb);
+        return sb;
     }
 
 #ifdef TINYASYNC_TRACE
@@ -200,6 +296,20 @@ namespace tinyasync
 
     inline std::vector<std::string> log_prefix;
 
+
+
+    inline void log(char const *fmt, ...)
+    {
+        for (auto &p : log_prefix)
+        {
+            printf("%s", p.c_str());
+        }
+        va_list args;
+        va_start(args, fmt);
+        vprintf(fmt, args);
+        va_end(args);
+    }
+
     struct log_prefix_guad
     {
         std::size_t l;
@@ -215,51 +325,19 @@ namespace tinyasync
 
             buf[1000 - 1] = 0;
 
-            l = log_prefix.size();
 
             log_prefix.emplace_back(buf);
+            l = log_prefix.size();
         }
 
         ~log_prefix_guad()
         {
-            if (l < log_prefix.size())
-            {
-                log_prefix.resize(l);
-            }
+            assert(l == log_prefix.size());
+            log_prefix.pop_back();
         }
     };
-
-    inline void log(char const *fmt, ...)
-    {
-        for (auto &p : log_prefix)
-        {
-            printf("%s", p.c_str());
-        }
-        va_list args;
-        va_start(args, fmt);
-        vprintf(fmt, args);
-        va_end(args);
-    }
 
 #else
-
-#define TINYASYNC_LOG(...) \
-    do                     \
-    {                      \
-    } while (0)
-
-
-    struct log_prefix_guad
-    {
-        log_prefix_guad(std::string_view)
-        {
-        }
-    };
-
-    inline void log(char const *fmt, ...)
-    {
-    }
-
 
 #define TINYASYNC_GUARD(...) \
     do                       \
@@ -270,8 +348,9 @@ namespace tinyasync
     {                      \
     } while (0)
 #define TINYASYNC_LOG_NNL(...) \
-    ldo {}                     \
-    while (0)
+    do                         \
+    {                          \
+    } while (0)
 
 #endif // TINYASYNC_TRACE
 
@@ -327,35 +406,36 @@ namespace tinyasync
         std::string m_name;
     };
 
-    inline void set_name_r(std::coroutine_handle<> const &h, Name const &name)
+    inline bool set_name_r(std::coroutine_handle<> const &h, Name const &name)
     {
-        TINYASYNC_GUARD("set_name_r():");
+        TINYASYNC_GUARD("set_name_r(): ");
         TINYASYNC_LOG("set name `%s` for %p", name.m_name.c_str(), h.address());
         ::tinyasync::set_name(h, name.m_name);
+        return true;
     }
 
-    void set_name_r(std::coroutine_handle<> const &h) {}
+    bool set_name_r(std::coroutine_handle<> const &h) {
+        return false;
+    }
 
     template <class F, class... T>
-    inline void set_name_r(std::coroutine_handle<> const &h, F const &f, T const &...args)
+    inline bool set_name_r(std::coroutine_handle<> const &h, F const &f, T const &...args)
     {
-        set_name_r(h, args...);
+        return set_name_r(h, args...);
     }
 
+
+    void throw_error(std::string const &what, int ec) {
+        throw std::system_error(ec, std::system_category(), what);
+    }
 
 #ifdef _WIN32
     void throw_WASError(std::string const &what, int ec = WSAGetLastError()) {
-        throw std::system_error(ec, std::system_category(), what);
-    }
-    void throw_error(std::string const &what, int ec  = WSAGetLastError()) {
-        throw_WASError(what);
+         throw_error(what, ec);
     }
 #else
-    void throw_errno(std::string const &what) {
-        throw std::system_error(errno, std::system_category(), what);
-    }
-    void throw_error(std::string const &what) {
-        throw_errno(what);
+    void throw_errno(std::string const &what, int ec = errno) {
+        throw std::system_error(ec, std::system_category(), what);
     }
 #endif
 
@@ -368,7 +448,7 @@ namespace tinyasync
 
             static void *operator new(std::size_t size)
             {
-                TINYASYNC_GUARD("Task::Promise::operator new():");
+                TINYASYNC_GUARD("Task.Promise.operator new(): ");
                 auto ptr = ::operator new(size);
                 TINYASYNC_LOG("%d bytes at %p", (int)size, ptr);                
                 return ptr;
@@ -376,50 +456,56 @@ namespace tinyasync
 
             static void operator delete(void *ptr, std::size_t size)
             {
-                TINYASYNC_GUARD("Task::Promise::operator delete():");
+                TINYASYNC_GUARD("Task.Promise.operator delete(): ");
                 TINYASYNC_LOG("%d bytes at %p", (int)size, ptr);
                 ::operator delete(ptr, size);
             }
 
             Task get_return_object()
             {
-                TINYASYNC_GUARD("Task::Promise::get_return_object():");
                 auto h = std::coroutine_handle<Promise>::from_promise(*this);
-                TINYASYNC_LOG("`%s`", name(h));
-                return {h};
+                TINYASYNC_GUARD("Task(`%s`).Promise.get_return_object(): ", c_name(h));
+                TINYASYNC_LOG("");
+                return { h };
             }
 
             template <class... T>
             Promise(T const &...args)
             {
-                TINYASYNC_GUARD("Task::Promise::Promise():");
-                TINYASYNC_LOG("");
                 auto h = std::coroutine_handle<Promise>::from_promise(*this);
-                set_name_r(h, args...);
+                TINYASYNC_GUARD("Task(`%s`).Promise.Promise(): ", c_name(h));
+                if(!set_name_r(h, args...)) {
+                    TINYASYNC_LOG("");
+                }
             }
 
             Promise(Promise &&r) = delete;
             Promise(Promise const &r) = delete;
+            ~Promise() {
+                auto h = std::coroutine_handle<Promise>::from_promise(*this);
+                TINYASYNC_GUARD("Task(`%s`).Promise.~Promise(): ",  c_name(h));
+                TINYASYNC_LOG("");
+            }
 
             struct InitialAwaityer : std::suspend_always
             {
-                std::coroutine_handle<> m_h;
+                std::coroutine_handle<Promise> m_sub_coroutine;
 
-                InitialAwaityer(std::coroutine_handle<Promise> h) : m_h(h)
+                InitialAwaityer(std::coroutine_handle<Promise> h) : m_sub_coroutine(h)
                 {
                 }
 
-                void await_suspend(std::coroutine_handle<> h) const noexcept
+                void await_suspend(std::coroutine_handle<> suspended_coroutine) const noexcept
                 {
-                    TINYASYNC_GUARD("InitialAwaityer::await_suspend():");
-                    TINYASYNC_LOG("%s suspended, back to caller", name(h));
+                    TINYASYNC_GUARD("Task(`%s`).InitialAwaityer.await_suspend(): ", c_name(m_sub_coroutine));
+                    TINYASYNC_LOG("`%s` suspended, back to caller", c_name(suspended_coroutine));
                     // return to caller
                 }
 
                 void await_resume() const noexcept
                 {
-                    TINYASYNC_GUARD("InitialAwaityer::await_resume():");
-                    TINYASYNC_LOG("%s resumed", name(m_h));
+                    TINYASYNC_GUARD("Task(`%s`).InitialAwaityer.await_resume(): ", c_name(m_sub_coroutine));
+                    TINYASYNC_LOG("`%s` resumed", c_name(m_sub_coroutine));
                 }
             };
 
@@ -428,21 +514,21 @@ namespace tinyasync
                 return {std::coroutine_handle<Promise>::from_promise(*this)};
             }
 
-            struct FinalAwater : std::suspend_always
+            struct FinalAwaiter : std::suspend_always
             {
                 std::coroutine_handle<> m_continuum;
 
-                FinalAwater(std::coroutine_handle<> continuum) noexcept : m_continuum(continuum)
+                FinalAwaiter(std::coroutine_handle<> continuum) noexcept : m_continuum(continuum)
                 {
                 }
 
                 std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) const noexcept
                 {
-                    TINYASYNC_GUARD("Task::FinalAwater::await_suspend():");
-                    TINYASYNC_LOG("`%s` suspended, resume its continuum `%s`", name(h), name(m_continuum));
+                    TINYASYNC_GUARD("Task.FinalAwaiter.await_suspend(): ");
+                    TINYASYNC_LOG("`%s` suspended, resume its continuum `%s`", c_name(h), c_name(m_continuum));
                     if (m_continuum)
                     {
-                        // co_wait ...
+                        // co_await ...
                         // back to awaiter
                         return m_continuum;
                     }
@@ -453,33 +539,30 @@ namespace tinyasync
 
                 void await_resume() const noexcept
                 {
-                    TINYASYNC_GUARD("Task::FinalAwater::await_resume():");
+                    TINYASYNC_GUARD("Task(`?`).FinalAwaiter.await_resume(): ");
                     TINYASYNC_LOG("Bug!");
                     // never reach here
                     assert(false);
                 }
             };
 
-            FinalAwater final_suspend() noexcept
+            FinalAwaiter final_suspend() noexcept
             {
                 return { m_continuum };
             }
 
             void unhandled_exception() { 
-                TINYASYNC_GUARD("Task::FinalAwater::await_resume():");
-                try {
-                    std::rethrow_exception(std::current_exception());
-                } catch(std::exception &e) {
-                    print_exception(e);
-                }
-
-                TINYASYNC_LOG("will be terminated");
-                std::terminate();
+                auto h = std::coroutine_handle<Promise>::from_promise(*this);
+                TINYASYNC_GUARD("Task(`%s`).Promise.unhandled_exception(): ", c_name(h));
+                TINYASYNC_LOG("");
+                m_unhandled_exception = std::current_exception();
             }
 
             void return_void()
             {
             }
+
+            std::exception_ptr m_unhandled_exception;
             std::coroutine_handle<> m_continuum = nullptr;
         };
 
@@ -498,9 +581,9 @@ namespace tinyasync
 
         struct Awaiter
         {
-            std::coroutine_handle<promise_type> m_h;
+            std::coroutine_handle<promise_type> m_sub_coroutine;
 
-            Awaiter(std::coroutine_handle<promise_type> h) : m_h(h)
+            Awaiter(std::coroutine_handle<promise_type> h) : m_sub_coroutine(h)
             {
             }
             bool await_ready()
@@ -510,18 +593,29 @@ namespace tinyasync
 
             void await_suspend(std::coroutine_handle<> suspend_coroutine)
             {
-                TINYASYNC_GUARD("Task::Awaiter::await_resume()(`%s`):", name(m_h));
+                TINYASYNC_GUARD("Task(`%s`).Awaiter.await_resume(): ", c_name(m_sub_coroutine));
 
-                TINYASYNC_LOG("set continuum of `%s` to `%s`", name(m_h), name(suspend_coroutine));
-                m_h.promise().m_continuum = suspend_coroutine;
-                TINYASYNC_LOG("`%s` suspended, resume `%s`", name(suspend_coroutine), name(m_h));
-                m_h.resume();
-                TINYASYNC_LOG("resumed from `%s`, `%s` already suspend, back to caller/resumer", name(m_h), name(suspend_coroutine));
+                TINYASYNC_LOG("set continuum of `%s` to `%s`", c_name(m_sub_coroutine), c_name(suspend_coroutine));
+                m_sub_coroutine.promise().m_continuum = suspend_coroutine;
+                TINYASYNC_LOG("`%s` suspended, resume `%s`", c_name(suspend_coroutine), c_name(m_sub_coroutine));
+
+                {
+                    TINYASYNC_GUARD("`%s`.resume(): ", c_name(m_sub_coroutine));
+                    m_sub_coroutine.resume();                    
+                }
+                TINYASYNC_LOG("`%s`.resume() return", c_name(m_sub_coroutine));
+
+                if(m_sub_coroutine.promise().m_unhandled_exception) {
+                    TINYASYNC_LOG("`%s` has unhandled_exception, rethrow!", c_name(m_sub_coroutine));                    
+                    std::throw_with_nested(std::runtime_error(format("body of `%s` throw exception", c_name(m_sub_coroutine))));
+                }
+                TINYASYNC_LOG("`%s` still suspended, back to caller/resumer", c_name(suspend_coroutine));
             }
 
             void await_resume()
             {
-                TINYASYNC_GUARD("Task::Awaiter::await_resume()(`%s`):", name(m_h));
+                TINYASYNC_GUARD("Task(`%s`).Awaiter.await_resume(): ", c_name(m_sub_coroutine));
+                TINYASYNC_LOG("(should) resumed from `%s`", c_name(m_sub_coroutine));
             }
         };
 
@@ -536,7 +630,7 @@ namespace tinyasync
 
         Task(std::coroutine_handle<Promise> h) : m_h(h)
         {
-            TINYASYNC_LOG("Task::Task(): %s", name(m_h));
+            TINYASYNC_LOG("Task(`%s`).Task(): ", c_name(m_h));
         }
 
         Task(Task &&r) noexcept : m_h(std::exchange(r.m_h, nullptr))
@@ -554,7 +648,13 @@ namespace tinyasync
         {
             if (m_h)
             {
-                m_h.destroy();
+                // unset_name();
+                TINYASYNC_GUARD("Task(`%s`).~Task(): ", c_name(m_h));
+                {
+                    TINYASYNC_GUARD("coroutine_handle.destroy(): ");
+                    TINYASYNC_LOG("");
+                    m_h.destroy();
+                }
             }
         }
 
@@ -571,15 +671,16 @@ namespace tinyasync
             template <class... T>
             Promise(T const &...args)
             {
-                TINYASYNC_GUARD("Spawn::Promise::Promise():");
-                TINYASYNC_LOG("");
                 auto h = std::coroutine_handle<Promise>::from_promise(*this);
-                set_name_r(h, args...);
+                TINYASYNC_GUARD("Spawn(`%s`).Promise.Promise(): ", c_name(h));
+                if(!set_name_r(h, args...)) {
+                    TINYASYNC_LOG("");
+                }
             }
 
             static void *operator new(std::size_t size)
             {
-                TINYASYNC_GUARD("Spawn::Promise::operator new():");
+                TINYASYNC_GUARD("Spawn.Promise.operator new(): ");
                 auto ptr = ::operator new(size);
                 TINYASYNC_LOG("%d bytes at %p", (int)size, ptr);
                 return ptr;
@@ -587,55 +688,88 @@ namespace tinyasync
 
             static void operator delete(void *ptr, std::size_t size)
             {
-                TINYASYNC_GUARD("Spawn::Promise::operator delete():");
+                TINYASYNC_GUARD("Spawn.Promise.operator delete(): ");
                 TINYASYNC_LOG("%d bytes at %p", (int)size, ptr);
                 return ::operator delete(ptr, size);
             }
 
-            std::coroutine_handle<> m_continuum = std::noop_coroutine();
-
             Spawn get_return_object()
             {
+                return {std::coroutine_handle<Promise>::from_promise(*this) };
+            }
+
+            struct InitialAwaiter : std::suspend_never
+            {
+                std::coroutine_handle<Promise> m_sub_coroutine;
+
+                InitialAwaiter(std::coroutine_handle<Promise> h) : m_sub_coroutine(h)
+                {
+                }
+                void await_resume() const noexcept
+                {
+                    TINYASYNC_GUARD("Spawn(`%s`).InitialAwaiter.await_resume(): ", c_name(m_sub_coroutine));
+                    TINYASYNC_LOG("`%s` resumed", c_name(m_sub_coroutine));
+                }
+            };
+            // get to run immediately
+            InitialAwaiter initial_suspend() {                
                 return {std::coroutine_handle<Promise>::from_promise(*this)};
             }
 
-            // get to run immediately
-            std::suspend_never initial_suspend() { return {}; }
-            // don't suspend
-            // the coroutine will be destroied automatically
-            std::suspend_never final_suspend() { return {}; }
-            void unhandled_exception() { std::terminate(); }
+
+            struct FinalAwaiter : std::suspend_always
+            {
+
+                // don't suspend
+                // the coroutine will be destroied automatically
+                // then return to caller
+                bool await_suspend1(std::coroutine_handle<> h) const noexcept
+                {
+                    TINYASYNC_GUARD("Spawn.FinalAwaiter.await_suspend(): ");
+                    TINYASYNC_LOG("`%s` final suspended", c_name(h));
+
+                    h.destroy();
+                    return true;
+                }
+                auto await_suspend(std::coroutine_handle<> h) const noexcept
+                {
+                    TINYASYNC_GUARD("Spawn.FinalAwaiter.await_suspend(): ");
+                    TINYASYNC_LOG("`%s` final suspended", c_name(h));
+
+                    h.destroy();
+                    return std::noop_coroutine();
+                }
+
+                void await_resume() const noexcept
+                {
+                    TINYASYNC_GUARD("Spawn(`?`).FinalAwaiter.await_resume(): ");
+                    TINYASYNC_LOG("Bug!");
+                    // never reach here
+                    //assert(false);
+                }
+            };
+
+            FinalAwaiter final_suspend() noexcept {
+                return { };
+            }
+
+            void unhandled_exception() {
+                std::terminate();
+            }
+
             void return_void() {}
         };
-        using promise_type = Promise;
 
+        using promise_type = Promise;
         Spawn(std::coroutine_handle<Promise> h) : m_h(h)
         {
         }
-
-        struct Awaiter : std::suspend_always
-        {
-            std::coroutine_handle<Promise> m_h;
-
-            Awaiter(std::coroutine_handle<Promise> h) : m_h(h)
-            {
-            }
-
-            void await_suspend(std::coroutine_handle<> h)
-            {
-                m_h.promise().m_continuum = h;
-            }
-        };
-        Awaiter operator co_await()
-        {
-            return {m_h};
-        }
-
+        
         promise_type &promise()
         {
             return m_h.promise();
         }
-
+        
         std::coroutine_handle<Promise> m_h;
     };
 
@@ -655,9 +789,10 @@ namespace tinyasync
         co_await awaitble;
     }
 
-#if defined(__WIN32)
+#if defined(_WIN32)
     struct IoEvent {
     };
+
 #elif defined(__unix__)
 
     using IoEvent = epoll_event;
@@ -695,12 +830,12 @@ namespace tinyasync
 
         CallbackPtr m_callback;
 
-#ifdef __WIN32
+#ifdef _WIN32
         OVERLAPPED m_overlapped;
 
         static Callback *from_overlapped(OVERLAPPED *o) {
-            constexpr std::size_t offset = offsetof(callback_base_type, m_overlapped);
-            callback_base_type *callback = reinterpret_cast<callback_base_type*>((reinterpret_cast<char*>(o) - offset));
+            constexpr std::size_t offset = offsetof(Callback, m_overlapped);
+            Callback *callback = reinterpret_cast<Callback*>((reinterpret_cast<char*>(o) - offset));
             return callback;
         }
 #endif
@@ -735,6 +870,8 @@ namespace tinyasync
 
         IoContext()
         {
+
+            TINYASYNC_GUARD("IoContext.IoContext(): ");
 #ifdef _WIN32
             WSADATA wsaData;
             int iResult = WSAStartup(MAKEWORD(2,2), &wsaData);
@@ -746,9 +883,10 @@ namespace tinyasync
             auto fd = epoll_create1(EPOLL_CLOEXEC);
             if (fd == -1)
             {
-                throw std::system_error(errno, std::system_category(), "can't create epoll");
+                throw_errno("IoContext().IoContext(): can't create epoll");
             }
             m_native_handle = fd;
+            TINYASYNC_LOG("epoll created");
 
 #endif
         }
@@ -771,7 +909,6 @@ namespace tinyasync
         {
 #ifdef _WIN32
 
-
             WSACleanup();
 #elif defined(__unix__)
             close_handle(m_native_handle);
@@ -788,43 +925,7 @@ namespace tinyasync
             m_abort_requested = true;
         }
 
-        void run()
-        {
-            TINYASYNC_GUARD("IoContex::run():");
-
-            for (; !m_abort_requested;)
-            {
-#ifdef _WIN32
-                // get thread into alternative state
-                // in thi state, the callback get a chance to be invoked
-                SleepEx(INFINITE, TRUE);
-
-#elif defined(__unix__)
-
-                int const maxevents = 5;
-                epoll_event events[maxevents];
-                auto epfd = m_native_handle;
-                int const timeout = -1; // indefinitely
-
-                TINYASYNC_LOG("epoll_wait ...");
-                int nfds = epoll_wait(epfd, (epoll_event *)events, maxevents, timeout);
-
-                if (nfds == -1)
-                {
-                    throw_errno("epoll_wait error");
-                }
-
-                for (auto i = 0; i < nfds; ++i)
-                {
-                    auto &evt = events[i];
-                    TINYASYNC_LOG("event %d of %d", i, nfds);
-                    TINYASYNC_LOG("event(%x) = %s", evt.events, ioe2str(evt).c_str());
-                    auto callback = (Callback *)evt.data.ptr;
-                    callback->callback(evt);
-                }
-#endif
-            }
-        }
+        void run();
 
     };
 
@@ -872,12 +973,16 @@ namespace tinyasync
 
         std::string to_string() const {
             if(m_address_type == AddressType::IpV4) {
+                char buf[256];
+
+#if _WIN32
+#elif defined(__unix__)
                 // host long -> network long -> string
                 // TODO: this is not thread safe
                 in_addr addr;
                 addr.s_addr = htonl(m_v4);
-                char buf[256];
                 inet_ntop(AF_INET, &addr, buf, sizeof(buf));
+#endif
                 return buf;
             } else if(m_address_type == AddressType::IpV6) {
                 //TODO: implement
@@ -915,9 +1020,11 @@ namespace tinyasync
     };
     static_assert(is_trivial_parameter_in_itanium_abi<Endpoint>::value);
 
-    inline void setnonblocking(int fd)
+    inline void setnonblocking(NativeSocket fd)
     {
-
+#ifdef __WIN32
+        //
+#elif defined(__unix__)
         //int status = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
         int status = fcntl(fd, F_SETFL, O_NONBLOCK);
 
@@ -925,6 +1032,7 @@ namespace tinyasync
         {
             throw std::system_error(errno, std::system_category(), "can't set fd nonblocking");
         }
+#endif
     }
 
 
@@ -964,13 +1072,12 @@ namespace tinyasync
         std::size_t await_resume();
     };
 
-    struct ConnCallback : CallbackMixin<ConnCallback>
+    class ConnCallback : public CallbackMixin<ConnCallback>
     {
+    public:
         ConnImpl *m_conn;
         ConnCallback(ConnImpl *conn) : m_conn(conn)
         {
-            TINYASYNC_GUARD("ConnCallback::ConnCallback():");
-            TINYASYNC_LOG("conn %p", conn);
         }
         void on_callback(IoEvent&);
 
@@ -984,7 +1091,7 @@ namespace tinyasync
 
 
         IoContext *m_ctx;
-        NativeHandle m_conn_handle;
+        NativeSocket m_conn_handle;
         ConnCallback m_callback { this };
         AsyncReceiveAwaiter *m_recv_awaiter = nullptr;
         AsyncSendAwaiter *m_send_awaiter = nullptr;
@@ -996,15 +1103,16 @@ namespace tinyasync
             {
                 // ubind from epool ...
                 close_socket(m_conn_handle);
-                m_conn_handle = NULL_HANDLE;
+                m_conn_handle = NULL_SOCKET;
 
-                m_conn_handle = NULL_HANDLE;
+                m_conn_handle = NULL_SOCKET;
             }
         }
 
-        ConnImpl(IoContext &ctx, NativeHandle conn_sock)
+        ConnImpl(IoContext &ctx, NativeSocket conn_sock)
         {
-            TINYASYNC_GUARD("ConnImpl");
+            TINYASYNC_GUARD("Connection.Connection(): ");
+            TINYASYNC_LOG("conn_socket %p", conn_sock);
 
             m_ctx = &ctx;
             m_conn_handle = conn_sock;
@@ -1022,7 +1130,7 @@ namespace tinyasync
 
         AsyncReceiveAwaiter async_read(void *buffer, std::size_t bytes)
         {
-            TINYASYNC_GUARD("Connection:receive():");
+            TINYASYNC_GUARD("Connection.async_read(): ");
             TINYASYNC_LOG("try to receive %d bytes", bytes);
 
             return {*this, buffer, bytes};
@@ -1030,7 +1138,7 @@ namespace tinyasync
 
         AsyncSendAwaiter async_send(void const *buffer, std::size_t bytes)
         {
-            TINYASYNC_GUARD("Connection:send():");
+            TINYASYNC_GUARD("Connection.send(): ");
             TINYASYNC_LOG("try to send %d bytes", bytes);
             return {*this, buffer, bytes};
         }
@@ -1040,7 +1148,10 @@ namespace tinyasync
 
     void ConnCallback::on_callback(IoEvent &evt)
     {
-        TINYASYNC_GUARD("ConnCallback::callback():");
+        TINYASYNC_GUARD("ConnCallback.callback(): ");
+#ifdef _WIN32
+        //
+#elif defined(__unix__)
 
         if ((evt.events | EPOLLIN) && m_conn->m_recv_awaiter) {
             // we want to read and it's ready to read
@@ -1113,12 +1224,14 @@ namespace tinyasync
             TINYASYNC_LOG("not processed event for conn_handle %x", errno, m_conn->m_conn_handle);
             exit(1);
         }
+#endif
+
     }
 
 
     AsyncReceiveAwaiter::AsyncReceiveAwaiter(ConnImpl &conn, void *b, std::size_t n)
     {
-        TINYASYNC_GUARD("AsyncReceiveAwaiter::AsyncReceiveAwaiter():");
+        TINYASYNC_GUARD("AsyncReceiveAwaiter.AsyncReceiveAwaiter(): ");
         m_next = nullptr;
         m_ctx = conn.m_ctx;
         m_conn = &conn;
@@ -1130,29 +1243,38 @@ namespace tinyasync
 
     void AsyncReceiveAwaiter::await_suspend(std::coroutine_handle<> h)
     {
-        TINYASYNC_GUARD("AsyncReceiveAwaiter::await_suspend():");
+        TINYASYNC_GUARD("AsyncReceiveAwaiter.await_suspend(): ");
         m_suspend_coroutine = h;
+
         // insert into front of list
         this->m_next = m_conn->m_recv_awaiter;
         m_conn->m_recv_awaiter = this;
         TINYASYNC_LOG("set recv_awaiter of conn(%p) to %p", m_conn, m_conn->m_recv_awaiter);
 
+#ifdef _WIN32
+        //
+#elif defined(__unix__)
         epoll_event evt;
-        evt.data.ptr = &m_conn->m_callback;            
+        evt.data.ptr = &m_conn->m_callback;
         evt.events = EPOLLIN;
         auto clterr = epoll_ctl(m_ctx->handle(), EPOLL_CTL_ADD, m_conn->m_conn_handle, &evt);
         TINYASYNC_LOG("epoll_ctl(EPOOLIN|EPOLLLT) for conn_handle = %d", m_conn->m_conn_handle);
+#endif
 
     }
 
     std::size_t AsyncReceiveAwaiter::await_resume()
     {
-        TINYASYNC_GUARD("AsyncReceiveAwaiter::await_resume():");
+        TINYASYNC_GUARD("AsyncReceiveAwaiter.await_resume(): ");
         // pop from front of list
         m_conn->m_recv_awaiter = m_conn->m_recv_awaiter->m_next;
         TINYASYNC_LOG("set recv_awaiter of conn(%p) to %p", m_conn, m_conn->m_recv_awaiter);
 
+#ifdef _WIN32
+        //
+#elif defined(__unix__)
         auto clterr = epoll_ctl(m_ctx->handle(), EPOLL_CTL_DEL, m_conn->m_conn_handle, NULL);
+#endif
         TINYASYNC_LOG("unregister conn_handle = %d", m_conn->m_conn_handle);
 
         return m_bytes_transfer;
@@ -1176,22 +1298,30 @@ namespace tinyasync
         m_conn->m_send_awaiter = this;
         TINYASYNC_LOG("set send_awaiter of conn(%p) to %p", m_conn, m_conn->m_send_awaiter);
 
+#ifdef _WIN32
+        //
+#elif defined(__unix__)
         epoll_event evt;
-        evt.data.ptr = &m_conn->m_callback;            
+        evt.data.ptr = &m_conn->m_callback;
         evt.events = EPOLLOUT;
         auto clterr = epoll_ctl(m_ctx->handle(), EPOLL_CTL_ADD, m_conn->m_conn_handle, &evt);
         TINYASYNC_LOG("epoll_ctl(EPOLLOUT|EPOLLLT) for conn_handle = %d", m_conn->m_conn_handle);
+#endif
     }
 
     std::size_t AsyncSendAwaiter::await_resume()
     {
-        TINYASYNC_GUARD("AsyncSendAwaiter::await_resume():");
+        TINYASYNC_GUARD("AsyncSendAwaiter.await_resume(): ");
         // pop from front of list
         m_conn->m_send_awaiter = m_conn->m_send_awaiter->m_next;
         TINYASYNC_LOG("set recv_awaiter of conn(%p) to %p", m_conn, m_conn->m_send_awaiter);
 
+#ifdef _WIN32
+        //
+#elif defined(__unix__)
         auto clterr = epoll_ctl(m_ctx->handle(), EPOLL_CTL_DEL, m_conn->m_conn_handle, NULL);
         TINYASYNC_LOG("unregister conn_handle = %d", m_conn->m_conn_handle);
+#endif
 
         return m_bytes_transfer;
     }
@@ -1203,7 +1333,7 @@ namespace tinyasync
         // 2. reference stable, usefull for callbacks
         std::unique_ptr<ConnImpl> m_impl;
     public:
-        Connection(IoContext &ctx, NativeHandle conn_sock)
+        Connection(IoContext &ctx, NativeSocket conn_sock)
         {
             m_impl.reset(new ConnImpl(ctx, conn_sock));
         }
@@ -1228,57 +1358,70 @@ namespace tinyasync
         IoContext *m_ctx;
         Protocol m_protocol;
         Endpoint m_endpoint;
-        NativeHandle m_socket;
+        NativeSocket m_socket;
         bool m_added_to_event_pool;
 
     public:
 
 
-        NativeHandle native_handle() const noexcept {
+        NativeSocket native_handle() const noexcept {
             return m_socket;
 
         }
 
         SocketMixin(IoContext &ctx) {
             m_ctx = &ctx;
-            m_socket = NULL_HANDLE;
+            m_socket = NULL_SOCKET;
+            m_added_to_event_pool = false;
 
         }
 
         void open(Protocol const &protocol, bool blocking = false)
         {
-            TINYASYNC_GUARD("SocketMixin::open():");            
+            TINYASYNC_GUARD("SocketMixin.open(): ");
+
+#ifdef TINYASYNC_THROW_ON_OPEN
+            throw_errno("can't create socket");
+#endif
+
+#ifdef _WIN32
+            //
+#elif defined(__unix__)
             // PF means protocol
             auto socketfd = ::socket(PF_INET, SOCK_STREAM, 0);
             if (socketfd == -1)
             {
                 throw_errno("can't create socket");
             }
-
-            if(!blocking)
+            if (!blocking)
                 setnonblocking(socketfd);
-
             m_socket = socketfd;
+#endif
+
             m_protocol = protocol;
-            TINYASYNC_LOG("create socket %X, nonblocking = %d", socketfd, int(!blocking));            
+            TINYASYNC_LOG("create socket %s, nonblocking = %d", socket_c_str(m_socket), int(!blocking));            
         }
 
 
         void reset()
         {
-            TINYASYNC_GUARD("SocketMixin::reset():");
+            TINYASYNC_GUARD("SocketMixin.reset(): ");
             if (m_socket)
             {
-                if(m_added_to_event_pool) {
+#ifdef _WIN32
+                //
+#elif defined(__unix__)
+                if (m_added_to_event_pool) {
                     auto ctlerr = epoll_ctl(m_ctx->handle(), EPOLL_CTL_DEL, m_socket, NULL);
-                    if(ctlerr == -1) {
+                    if (ctlerr == -1) {
                         auto what = format("can't remove (from epoll) socket %x", m_socket);
                         throw_errno(what);
                     }
                 }
-                TINYASYNC_LOG("close fd = %d", m_socket);
+#endif
+                TINYASYNC_LOG("close fd = %s", socket_c_str(m_socket));
                 close_socket(m_socket);
-                m_socket = NULL_HANDLE;
+                m_socket = NULL_SOCKET;
             }
         }
     };
@@ -1355,7 +1498,11 @@ namespace tinyasync
         void bind(Endpoint const &endpoint)
         {
 
-            TINYASYNC_GUARD("Acceptor::bind():");            
+            TINYASYNC_GUARD("Acceptor.bind(): ");            
+#ifdef _WIN32
+            //
+#elif defined(__unix__)
+
             int listenfd = m_socket;
 
             sockaddr_in serveraddr;
@@ -1369,19 +1516,26 @@ namespace tinyasync
             serveraddr.sin_port = htons(endpoint.m_port);
             serveraddr.sin_addr.s_addr = htonl(endpoint.m_address.m_v4);
 
-            auto binderr = ::bind(listenfd, (sockaddr *)&serveraddr, sizeof(serveraddr));
+            auto binderr = ::bind(listenfd, (sockaddr*)&serveraddr, sizeof(serveraddr));
             if (binderr == -1)
             {
                 throw_errno(format("can't bind socket, fd = %x", listenfd));
             }
+#endif
 
             m_endpoint = endpoint;
-            TINYASYNC_LOG("fd = %X", listenfd);            
+            TINYASYNC_LOG("socket = %s", socket_c_str(m_socket));            
         }
 
         void listen()
         {
-            TINYASYNC_GUARD("Acceptor::listen():");            
+            TINYASYNC_GUARD("Acceptor.listen(): ");            
+
+
+#ifdef _WIN32
+            //
+#elif defined(__unix__)
+
             int listenfd = m_socket;
             int max_pendding_connection = 5;
             int err = ::listen(listenfd, max_pendding_connection);
@@ -1391,15 +1545,17 @@ namespace tinyasync
             }
 
             epoll_event evt;
-            evt.data.ptr = &m_callback;            
+            evt.data.ptr = &m_callback;
             // level triger by default
             evt.events = EPOLLIN;
             auto ctlerr = epoll_ctl(m_ctx->handle(), EPOLL_CTL_ADD, listenfd, &evt);
-            if(ctlerr == -1) {
+            if (ctlerr == -1) {
                 throw_errno(format("can't listen %x", listenfd));
             }
             m_added_to_event_pool = true;
-            TINYASYNC_LOG("fd = %X", listenfd);            
+#endif
+
+            TINYASYNC_LOG("socket = %s", socket_c_str(m_socket));
         }
 
 
@@ -1425,17 +1581,24 @@ namespace tinyasync
     Connection AcceptorAwaiter::await_resume()
     {
 
-        TINYASYNC_GUARD("Acceptor::Awaiter::await_resume():");
+        TINYASYNC_GUARD("AcceptorAwaiter.await_resume(): ");
         TINYASYNC_LOG("acceptor %p, awaiter %p", &m_acceptor, m_acceptor->m_awaiter);
 
+        NativeSocket conn_sock = NULL_SOCKET;
+#ifdef _WIN32
+        //
+#elif defined(__unix__)
+
         // it's ready to accept
-        int conn_sock = ::accept(m_acceptor->m_socket, NULL, NULL);
+        conn_sock = ::accept(m_acceptor->m_socket, NULL, NULL);
         if (conn_sock == -1)
         {
             throw_errno(format("can't accept %x", conn_sock));
         }
+#endif
 
-        TINYASYNC_LOG("setnonblocking %d", conn_sock);
+
+        TINYASYNC_LOG("setnonblocking, socket = %s", socket_c_str(conn_sock));
         setnonblocking(conn_sock);
 
         m_acceptor->m_awaiter = nullptr;
@@ -1446,7 +1609,7 @@ namespace tinyasync
 
     void AcceptorCallback::on_callback(IoEvent &evt)
     {
-        TINYASYNC_GUARD("AcceptCallback::callback():");
+        TINYASYNC_GUARD("AcceptorCallback.callback(): ");
         TINYASYNC_LOG("acceptor %p, awaiter %p", m_acceptor, m_acceptor->m_awaiter);
         AcceptorAwaiter *awaiter = m_acceptor->m_awaiter;
         if(awaiter) {
@@ -1519,7 +1682,7 @@ namespace tinyasync
 
         ConnectorImpl *m_connector;
         std::coroutine_handle<> m_suspend_coroutine;
-        void unregister(NativeHandle conn_handle);
+        void unregister(NativeSocket conn_handle);
 
     public:
         ConnectorAwaiter(ConnectorImpl &connector) : m_connector(&connector) {
@@ -1588,7 +1751,7 @@ namespace tinyasync
         {
 
             TINYASYNC_GUARD("Connector::connect():");            
-            int connfd = m_socket;
+            NativeSocket connfd = m_socket;
 
             sockaddr_in serveraddr;
             memset(&serveraddr, 0, sizeof(serveraddr));
@@ -1601,22 +1764,30 @@ namespace tinyasync
             serveraddr.sin_addr.s_addr = htonl(endpoint.m_address.m_v4);
 
             bool connected = false;
-            auto connerr = ::connect(connfd, (sockaddr *)&serveraddr, sizeof(serveraddr));
+
+#ifdef _WIN32
+            //
+#elif defined(__unix__)
+            auto connerr = ::connect(connfd, (sockaddr*)&serveraddr, sizeof(serveraddr));
             if (connerr == -1)
             {
-                if(errno == EINPROGRESS) {
+                if (errno == EINPROGRESS) {
                     TINYASYNC_LOG("EINPROGRESS, conn_handle = %X", connfd);
                     // just ok ...
-                } else {
-                    throw_errno(format("can't connect, conn_handle = %X", connfd));
                 }
-            } else if(connerr == 0) {
+                else {
+                    throw_errno(format("can't connect, conn_handle = %X", connfd));
+        }
+    }
+            else if (connerr == 0) {
                 TINYASYNC_LOG("connected, conn_handle = %X", connfd);
                 // it's connected ??!!
                 connected = true;
             }
+#endif
 
-            TINYASYNC_LOG("conn_handle = %X", connfd);
+
+            TINYASYNC_LOG("conn_handle = %s", socket_c_str(connfd));
             m_endpoint = endpoint;
             return connected;
         }
@@ -1638,7 +1809,10 @@ namespace tinyasync
 
         auto connfd = m_connector->m_socket;
 
-        if(evt.events & (EPOLLERR|EPOLLHUP)) {
+#ifdef _WIN32
+        //
+#elif defined(__unix__)
+        if (evt.events & (EPOLLERR | EPOLLHUP)) {
             throw_errno(format("error, fd = %d", connfd));
         }
 
@@ -1648,14 +1822,16 @@ namespace tinyasync
             throw_errno(format("getsockopt failed for conn_handle = %d", m_connector->m_socket));
         }
         if (result != 0) {
-            if(errno == EINPROGRESS) {
+            if (errno == EINPROGRESS) {
                 TINYASYNC_LOG("EINPROGRESS, fd = %d", connfd);
                 return;
-            } else {
+            }
+            else {
                 TINYASYNC_LOG("bad!, fd = %d", connfd);
                 throw_errno(format("connect failed for conn_handle = %d", m_connector->m_socket));
             }
         }
+#endif
 
         TINYASYNC_LOG("connected");
         m_connector->m_awaiter->m_suspend_coroutine.resume();
@@ -1663,32 +1839,43 @@ namespace tinyasync
     }
 
 
-    void ConnectorAwaiter::unregister(NativeHandle conn_handle) {
+    void ConnectorAwaiter::unregister(NativeSocket conn_handle) {
         auto connfd = conn_handle;
         m_connector->m_awaiter = nullptr;
+
+#ifdef _WIN32
+        //
+#elif defined(__unix__)
         auto clterr = epoll_ctl(m_connector->m_ctx->handle(), EPOLL_CTL_DEL, connfd, NULL);
-        if(clterr == -1) {
+        if (clterr == -1) {
             throw_errno(format("can't unregister conn_handle = %d", connfd));
         }
-        TINYASYNC_LOG("unregister connect for conn_handle = %d", connfd);
+#endif
+
+        TINYASYNC_LOG("unregister connect for conn_handle = %s", socket_c_str(connfd));
     }
 
     bool ConnectorAwaiter::await_suspend(std::coroutine_handle<> suspend_coroutine) {
         TINYASYNC_LOG("ConnectorAwaiter::await_suspend():");            
         m_suspend_coroutine = suspend_coroutine;
-        auto connfd = m_connector->m_socket;
+        NativeSocket connfd = m_connector->m_socket;
 
         assert(!m_connector->m_awaiter);
         m_connector->m_awaiter = this;
 
+#ifdef _WIN32
+        //
+#elif defined(__unix__)
         epoll_event evt;
-        evt.data.ptr = &m_connector->m_callback;           
+        evt.data.ptr = &m_connector->m_callback;
         // level triger by default
         evt.events = EPOLLOUT;
         auto clterr = epoll_ctl(m_connector->m_ctx->handle(), EPOLL_CTL_ADD, m_connector->m_socket, &evt);
-        if(clterr == -1) {
+        if (clterr == -1) {
             throw_errno(format("epoll_ctl(EPOLLOUT) failed for conn_handle = %d", m_connector->m_socket));
         }
+#endif
+
         TINYASYNC_LOG("register connect for conn_handle = %d", m_connector->m_socket);            
         
         if(m_connector->connect(m_connector->m_endpoint)) {
@@ -1793,16 +1980,9 @@ namespace tinyasync
 
             // create a timer
             m_suspend_coroutine = h;
-
             itimerspec time;
-            time.it_interval.tv_sec = 0;
-            time.it_interval.tv_nsec = 0;
-
-            auto seconds = m_elapse / (1000 * 1000);
-            auto nanos = (m_elapse - seconds * (1000 * 1000)) * 1000;
-
-            time.it_value.tv_sec = seconds;
-            time.it_value.tv_nsec = nanos;
+            time.it_value = to_timespec(m_elapse);
+            time.it_interval = to_timespec(0);
 
             auto fd = timerfd_create(CLOCK_REALTIME, 0);
             if (fd == -1)
@@ -1840,6 +2020,53 @@ namespace tinyasync
 #endif
     };
 
+    void IoContext::run()
+    {
+        TINYASYNC_GUARD("IoContex::run(): ");
+
+        for (; !m_abort_requested;)
+        {
+#ifdef _WIN32
+
+            DWORD bytesTransfered;
+            ULONG_PTR key;
+            OVERLAPPED *overlapped;
+            if (GetQueuedCompletionStatus(m_native_handle, &bytesTransfered, &key, &overlapped, INFINITE) == 0)
+            {
+                throw_error("GetQueuedCompletionStatus failed", GetLastError());
+            }
+            IoEvent evt;
+            Callback *callback = Callback::from_overlapped(overlapped);
+
+            callback->callback(evt);
+
+#elif defined(__unix__)
+
+            int const maxevents = 5;
+            epoll_event events[maxevents];
+            auto epfd = m_native_handle;
+            int const timeout = -1; // indefinitely
+
+            TINYASYNC_LOG("epoll_wait ...");
+            int nfds = epoll_wait(epfd, (epoll_event *)events, maxevents, timeout);
+
+            if (nfds == -1)
+            {
+                throw_errno("epoll_wait error");
+            }
+
+            for (auto i = 0; i < nfds; ++i)
+            {
+                auto &evt = events[i];
+                TINYASYNC_LOG("event %d of %d", i, nfds);
+                TINYASYNC_LOG("event = %x (%s)", evt.events, ioe2str(evt).c_str());
+                auto callback = (Callback *)evt.data.ptr;
+                callback->callback(evt);
+            }
+#endif
+        } // for
+    } // run
+
     // elapse in micro-second
     TimerAwaiter async_sleep(IoContext &ctx, uint64_t elapse)
     {
@@ -1853,7 +2080,7 @@ namespace tinyasync
     //static_assert(!std::is_standard_layout_v<Callback>);
     //static_assert(!std::is_standard_layout_v<ConnCallback>);
     static_assert(std::is_standard_layout_v<Callback>);
-    static_assert(std::is_standard_layout_v<std::coroutine_handle<> >);
+    static_assert(std::is_standard_layout_v<std::coroutine_handle<>>);
 } // namespace tinyasync
 
 #endif // TINYASYNC_H
