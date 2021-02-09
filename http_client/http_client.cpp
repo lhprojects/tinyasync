@@ -1,4 +1,4 @@
-//#define TINYASYNC_TRACE
+#define TINYASYNC_TRACE
 #include <tinyasync/tinyasync.h>
 
 using namespace tinyasync;
@@ -6,7 +6,6 @@ using namespace tinyasync;
 Task do_download(IoContext &ctx, Name="download") {
 
 
-    struct addrinfo* addr;
     hostent * record = gethostbyname("www.baidu.com");
 	in_addr * address = (in_addr * )record->h_addr;
     uint32_t ip = ntohl(address->s_addr);
@@ -50,11 +49,12 @@ void download() {
 	TINYASYNC_GUARD("download():");
 
 	IoContext ctx;
-    do_download(ctx);
+    co_spawn(do_download(ctx));
 
 	TINYASYNC_LOG("run");
 	ctx.run();
 }
+
 
 int main()
 {

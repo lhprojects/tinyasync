@@ -1,9 +1,7 @@
-﻿#include <tinyasync/tinyasync.h>
-#include <array>
-#include <initializer_list>
+﻿//#define TINYASYNC_TRACE
+#include <tinyasync/tinyasync.h>
 #include <span>
 #include <stdio.h>
-#include <unordered_map>
 #include <algorithm>
 
 using namespace tinyasync;
@@ -11,8 +9,8 @@ using namespace tinyasync;
 int nc = 0;
 
 Task sleep_task(IoContext &ctx, int n) {
-	co_await async_sleep(ctx, 1000 *1000 * (uint64_t)n);
 
+	co_await async_sleep(ctx, 1000 *1000 * (uint64_t)n);
 	printf("%d ", (int)n);
 	fflush(stdout);
 
@@ -23,7 +21,9 @@ Task sleep_task(IoContext &ctx, int n) {
 	}
 }
 
-void sleepsort(std::vector<int> ints) {
+void sleepsort(std::span<int> ints) {
+
+	TINYASYNC_GUARD("[main thread]: ");
 
 	IoContext ctx;
 

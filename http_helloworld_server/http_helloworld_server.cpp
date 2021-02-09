@@ -12,7 +12,7 @@ Task do_handle_connection(IoContext& ctx, Connection conn, Name="do_handle_conne
 	std::string buffer;
 	for(;;) {
 		char b[1000];
-		auto nread = co_await conn.async_read(b, 1000);
+		auto nread = co_await conn.async_read(b, sizeof(b));
 		if(nread == 0) {
 			throw std::runtime_error("remote closed");
 		}
@@ -43,14 +43,16 @@ Task do_handle_connection(IoContext& ctx, Connection conn, Name="do_handle_conne
 		R"(<html>
 <head><title>Hello, World</title></head>
 <body>Hello, World</body>
-</html>)";
+</html>
+)";
 
 	} else {
 		response = "HTTP/1.1 404 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n"
 		R"(<html>
 	<head><title>404!</title></head>
 	<body>404!</body>
-	</html>)";
+	</html>
+)";
 	}
 
 	auto remain = strlen(response);

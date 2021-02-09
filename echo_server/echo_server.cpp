@@ -54,7 +54,6 @@ Task listen(IoContext &ctx, Name="listen") {
 		// so that we have a chance to go back to acceptor.async_accept()
 		// where this coroutine is blocked again
 		// the handle_connection will be resumed if coresponding io of handle_connection is ready
-		// note `handle_connection` returns Spawn
 		co_spawn(handle_connection(ctx, std::move(conn)));
 	}
 
@@ -68,7 +67,6 @@ void server() {
 	// so that we can goto event loop in ctx.run()
 	// where we will resume the coroutine when io is ready
 	// note `listen` returns Task
-	// you can let listen return Spawn, and replace co_spawn(listen()) with listen()	
 	co_spawn(listen(ctx));
 
 	TINYASYNC_LOG("run");
