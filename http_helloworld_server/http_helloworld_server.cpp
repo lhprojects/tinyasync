@@ -6,7 +6,7 @@
 using namespace tinyasync;
 
 
-Task do_handle_connection(IoContext& ctx, Connection conn, Name="do_handle_connection") {
+Task<> do_handle_connection(IoContext& ctx, Connection conn, Name="do_handle_connection") {
 
 	
 	std::string buffer;
@@ -70,7 +70,7 @@ Task do_handle_connection(IoContext& ctx, Connection conn, Name="do_handle_conne
 
 }
 
-Task handle_connection(IoContext& ctx, Connection conn, Name="handle_connection") {
+Task<> handle_connection(IoContext& ctx, Connection conn, Name="handle_connection") {
 	try{
 		co_await do_handle_connection(ctx, std::move(conn));
 	} catch(...) {
@@ -78,7 +78,7 @@ Task handle_connection(IoContext& ctx, Connection conn, Name="handle_connection"
 		printf("connection will be closed\n");
 	}
 }
-Task listen(IoContext &ctx, Name="listen") {
+Task<> listen(IoContext &ctx, Name="listen") {
 
 	Acceptor acceptor(ctx, Protocol::ip_v4(), Endpoint(Address::Any(), 8899));
 

@@ -3,7 +3,7 @@
 
 using namespace tinyasync;
 
-Task echo_once(Connection &conn, bool &run, Name = "echo_once") {
+Task<> echo_once(Connection &conn, bool &run, Name = "echo_once") {
 	char buf[1000];
 	std::size_t nread = co_await conn.async_read(buf, 1000);
 	if(nread == 0) {
@@ -31,7 +31,7 @@ Task echo_once(Connection &conn, bool &run, Name = "echo_once") {
 	}
 }
 
-Task handle_connection(IoContext& ctx, Connection conn, Name="handle_connection") {
+Task<> handle_connection(IoContext& ctx, Connection conn, Name="handle_connection") {
 	bool run = true;
 	for(;run;) {
 		// suspend initially
@@ -43,7 +43,7 @@ Task handle_connection(IoContext& ctx, Connection conn, Name="handle_connection"
 }
 
 
-Task listen(IoContext &ctx, Name="listen") {
+Task<> listen(IoContext &ctx, Name="listen") {
 
 	Acceptor acceptor(ctx, Protocol::ip_v4(), Endpoint(Address::Any(), 8899));
 

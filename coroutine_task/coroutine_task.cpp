@@ -6,7 +6,7 @@ using namespace tinyasync;
 std::coroutine_handle<> suspended_coroutine;
 int data_;
 
-Task task(Name = "task") {
+Task<int> task(Name = "task") {
 
     suspended_coroutine = co_await this_coroutine<>();
     co_await std::suspend_always{};
@@ -15,10 +15,13 @@ Task task(Name = "task") {
     suspended_coroutine = co_await this_coroutine<>();
     co_await std::suspend_always{};
     printf("recv %d\n", data_);
+
+	co_return 2;
 }
 
-Task spawn_task(Name = "spawn_task") {
-    co_await task();
+Task<> spawn_task(Name = "spawn_task") {
+	int v = co_await task();
+	printf("task return %d\n", v);
 }
 
 

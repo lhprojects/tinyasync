@@ -3,7 +3,7 @@
 
 using namespace tinyasync;
 
-Task do_download(IoContext &ctx, Name="download") {
+Task<> do_download(IoContext &ctx, Name="download") {
 
 
     hostent * record = gethostbyname("www.baidu.com");

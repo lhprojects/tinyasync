@@ -8,7 +8,7 @@ using namespace tinyasync;
 
 int nc = 0;
 
-Task sleep_task(IoContext &ctx, int n) {
+Task<> sleep_task(IoContext &ctx, int n) {
 
 	co_await async_sleep(ctx, 1000 *1000 * (uint64_t)n);
 	printf("%d ", (int)n);
@@ -38,14 +38,8 @@ void sleepsort(std::span<int> ints) {
 
 int main(int argc, char *argv[]) {
 
-	std::vector<int> ints;
-	for(int i = 1; i < argc; ++i) {
-		ints.push_back( atoi(argv[i]) );
-	}
-
-	if(ints.size() == 0) {
-		return 0;
-	}
+	std::vector<int> ints = { 1, 3, 2};
+	printf("sorting 1 3 2\n");
 
 	auto min = *std::min_element(ints.begin(), ints.end());
 	if (min < 0) {
