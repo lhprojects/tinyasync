@@ -22,8 +22,10 @@ In summary, it's great place to start your learning in writing your the c++20 co
 
 ## Build
 
-This is a header library. You needn't to build the library itself. Just adding the `<root_of_project>/include` to your inlcue path.
-
+This is a header library. You needn't to build the library itself. Just adding the `<root_of_project>/include` to your inlcue path. Use `tinyasync` as following:
+```c++
+#include <tinyasync/tinyasync.h>
+```
 ## Examples
 
 ### Build
@@ -91,4 +93,27 @@ curl localhost:8899
 ```bash
 cat /etc/resolv.conf
 curl <ip_from_above>:8899
+```
+
+## Play on `godbolt.org`
+
+You need to include tinyasync as following:
+```c++
+#include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/basics.h>
+#include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/task.h>
+#include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/tinyasync.h>
+<your code>
+```
+
+* flags with clang (https://gcc.godbolt.org/z/zTvE8x)
+```
+-O2 -std=c++2a -fcoroutines-ts -stdlib=libc++ -DNDEBUG
+```
+* flags with gcc
+```
+-O2 -std=c++2a -fcoroutines -DNDEBUG
+```
+* flags with MSVC (https://gcc.godbolt.org/z/K8efKh)
+```
+/std:c++latest /O2
 ```

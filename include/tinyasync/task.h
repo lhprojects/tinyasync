@@ -1,5 +1,5 @@
-#ifndef TINYASYNC_TASH_H
-#define TINYASYNC_TASH_H
+#ifndef TINYASYNC_TASK_H
+#define TINYASYNC_TASK_H
 
 
 #include <exception>
@@ -427,8 +427,8 @@ namespace tinyasync {
         ResumeResult res;
 
         // awiaters except Task::Awaiter don't touch `m_return_from`
-        // if no coroutine switch, the m_return_from will not change
-        // initialize it with first coroutine
+        // If no coroutine switch, the m_return_from will not change,
+        // initialize it with first coroutine.
         res.m_return_from = coroutine;
 
         coroutine.promise().m_resume_result = &res;
@@ -440,6 +440,8 @@ namespace tinyasync {
 
 #define TINYASYNC_RESUME(coroutine)  resume_coroutine(coroutine, TINYASYNC_FUNCNAME)
 
+    // you can't get result of task here
+    // so use Task<void>
     inline void co_spawn(Task<void> task)
     {
         TINYASYNC_GUARD("co_spawn(): ");
@@ -469,6 +471,34 @@ namespace tinyasync {
     }
 
 
+    class YieldAwaiter {
+    public:
+        bool await_ready() noexcept { return false; }
+        void await_suspend(std::coroutine_handle<>) noexcept  {            
+        }
+        void await_resume() noexcept { }
+    };
+
+    YieldAwaiter yield() {
+        return { };
+    }
+
+    class YieldAwaiterC {
+        std::coroutine_handle<> m_coroutine;
+    public:
+        YieldAwaiterC(std::coroutine_handle<> h) {
+            m_coroutine = h;
+        }
+        bool await_ready() noexcept { return false; }
+        std::coroutine_handle<> await_suspend(std::coroutine_handle<>) noexcept  {
+            return m_coroutine;
+        }
+        void await_resume() noexcept { }
+    };
+
+    YieldAwaiterC yield(std::coroutine_handle<> h) {
+        return { h };
+    }
 
 } // tinyasync
 
