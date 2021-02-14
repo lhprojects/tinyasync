@@ -1,15 +1,21 @@
 ﻿cmake_minimum_required (VERSION 3.8)
 
-project ("tinycoro")
+project ("tinasync")
 
-
-if (MSVC)
-    # warning level 4 and all warnings as errors
+if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
     add_compile_options(/std:c++latest)
-else()
-    # lots of warnings and all warnings as errors
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
     add_compile_options(-fcoroutines -std=c++2a -Wfatal-errors)
+else()
+    add_compile_options(-fcoroutines-ts -std=c++2a -Wfatal-errors)
 endif()
+
+include_directories(./include)
+set(HEADER_FILES 
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/tinyasync/basics.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/tinyasync/task.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/tinyasync/tinyasync.h
+)
 
 add_subdirectory("coroutine_task")
 add_subdirectory("sleepsort")
