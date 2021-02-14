@@ -10,7 +10,7 @@ int nc = 0;
 
 Task<> sleep_task(IoContext &ctx, int n) {
 
-	co_await async_sleep(ctx, 1000 *1000 * (uint64_t)n);
+	co_await async_sleep(ctx, std::chrono::seconds(n));
 	printf("%d ", (int)n);
 	fflush(stdout);
 

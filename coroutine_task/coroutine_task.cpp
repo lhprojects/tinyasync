@@ -30,13 +30,13 @@ int main() {
 	co_spawn(spawn_task());
 
 	printf("io 1 waiting\n");
-	sleep_seconds(1);
+	sync_sleep(std::chrono::seconds(1));
 	data_ = 1;
 	printf("io 1 finished\n");
 	suspended_coroutine.resume();
 
 	printf("io 2 waiting\n");
-	sleep_seconds(1);
+	sync_sleep(std::chrono::seconds(1));
     data_ = 2;
 	printf("io 2 finished\n");
 	suspended_coroutine.resume();

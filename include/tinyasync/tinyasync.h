@@ -1441,14 +1441,14 @@ namespace tinyasync {
         friend class TimerCallback;
     private:
         IoContext* m_ctx;
-        uint64_t m_elapse; // mili-second
+        std::chrono::nanoseconds m_elapse; // mili-second
         NativeHandle m_timer_handle = NULL_HANDLE;
         std::coroutine_handle<TaskPromiseBase> m_suspend_coroutine;
         TimerCallback m_callback = this;
 
     public:
         // elapse in micro-second
-        TimerAwaiter(IoContext& ctx, uint64_t elapse) : m_ctx(&ctx), m_elapse(elapse)
+        TimerAwaiter(IoContext& ctx, std::chrono::nanoseconds elapse) : m_ctx(&ctx), m_elapse(elapse)
         {
         }
 
@@ -1501,8 +1501,8 @@ namespace tinyasync {
 
             if (timer_handle != NULL_HANDLE) {
                 LARGE_INTEGER elapse;
-                // 10 * 100ns = 1us
-                elapse.QuadPart = -10 * awaiter->m_elapse;
+                // QuadPart is in 100ns
+                elapse.QuadPart = -awaiter->m_elapse.count()/100;
 
                 SetWaitableTimer(timer_handle, &elapse, 0, onTimeOut, (PVOID)awaiter, FALSE);
             } else {
@@ -1574,7 +1574,7 @@ namespace tinyasync {
             m_suspend_coroutine = h;
             itimerspec time;
             time.it_value = to_timespec(m_elapse);
-            time.it_interval = to_timespec(0);
+            time.it_interval = to_timespec(std::chrono::nanoseconds{0});
 
             auto fd = timerfd_create(CLOCK_REALTIME, 0);
             if (fd == -1) {
@@ -1708,8 +1708,8 @@ namespace tinyasync {
         } // for
     } // run
 
-    // elapse in micro-second
-    TimerAwaiter async_sleep(IoContext& ctx, uint64_t elapse)
+
+    TimerAwaiter async_sleep(IoContext& ctx, std::chrono::nanoseconds elapse)
     {
         return TimerAwaiter(ctx, elapse);
     }

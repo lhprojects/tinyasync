@@ -3,6 +3,7 @@
 #define TINYASYNC_BASICS_H
 
 #ifdef __clang__
+
 #include <experimental/coroutine>
 namespace std {
     using std::experimental::suspend_always;
@@ -11,7 +12,9 @@ namespace std {
     using std::experimental::noop_coroutine;
 }
 #else
+
 #include <coroutine>
+
 #endif
 
 #include <exception>
@@ -32,6 +35,7 @@ namespace std {
 #include <list>
 #include <mutex>
 #include <atomic>
+#include <chrono>
 
 #ifdef _WIN32
 
@@ -100,17 +104,11 @@ namespace tinyasync {
     }
 
 
-    void sleep_microseconds(uint64_t microseconds)
+    void sync_sleep(std::chrono::nanoseconds nanoseconds)
     {
-
-        DWORD miliseconds;
-        if (microseconds == UINT64_MAX) {
-            miliseconds = INFINITE;
-        } else {
-            uint64_t miliseconds_ = (microseconds / 1000);
-            assert((DWORD)(miliseconds_) == miliseconds_);
-            miliseconds = (DWORD)(miliseconds_);
-        }
+        uint64_t miliseconds_ = (nanoseconds.count() / (1000*1000));
+        assert((DWORD)(miliseconds_) == miliseconds_);
+        DWORD miliseconds = (DWORD)(miliseconds_);
         ::Sleep(miliseconds);
     }
 
@@ -129,12 +127,12 @@ namespace tinyasync {
         return ::close(h);
     }
 
-    timespec to_timespec(uint64_t microseconds)
+    timespec to_timespec(std::chrono::nanoseconds nanoseconds)
     {
 
         timespec time;
-        auto seconds = microseconds / (1000 * 1000);
-        auto nanos = (microseconds - seconds * (1000 * 1000)) * 1000;
+        auto seconds = nanoseconds.count() / (1000 * 1000 * 1000);
+        auto nanos = (nanoseconds.count() - seconds * (1000 * 1000 * 1000));
 
         time.tv_sec = seconds;
         time.tv_nsec = nanos;
@@ -142,9 +140,9 @@ namespace tinyasync {
         return time;
     }
 
-    void sleep_microseconds(uint64_t microseconds)
+    void sync_sleep(std::chrono::nanoseconds nanoseconds)
     {
-        auto timespec = to_timespec(microseconds);
+        auto timespec = to_timespec(nanoseconds);
         ::nanosleep(&timespec, NULL);
     }
 
@@ -212,12 +210,6 @@ namespace tinyasync {
         }
         return t;
     };
-
-
-    void sleep_seconds(uint64_t seconds)
-    {
-        sleep_microseconds(1000 * 1000 * seconds);
-    }
 
     NativeHandle const NULL_HANDLE = 0;
     NativeSocket const NULL_SOCKET = NativeSocket(0);

@@ -1,11 +1,9 @@
 #ifndef TINYASYNC_TASK_H
 #define TINYASYNC_TASK_H
 
-
 #include <exception>
 
 namespace tinyasync {
-
 
     struct ResumeResult;
 
