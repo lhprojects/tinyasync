@@ -1698,21 +1698,23 @@ namespace tinyasync {
     class ConditionVariableCallback : public CallbackImplBase
     {
     public:
-        ConditionVariable *m_condv;
-        ConditionVariableCallback(ConditionVariable &condv) : CallbackImplBase(this)
+        ConditionVariableCallback(ConditionVariable &) : CallbackImplBase(this)
         {
-            m_condv = &condv;
         }
         void on_callback(IoEvent &);
     };
-    static_assert(std::is_standard_layout_v<CallbackImplBase>);
+    static_assert(sizeof(ConditionVariableCallback) == sizeof(void*));
 
 
-    class ConditionVariable {
+    class ConditionVariable
+    {
     public:
-        ConditionVariableAwaiter *m_awaiter = nullptr;
+        using callback_type = ConditionVariableCallback;
+        using awaiter_type = ConditionVariableAwaiter;
+
+        std::atomic<ConditionVariableAwaiter*> m_awaiter = nullptr;
         IoContext *m_ctx = nullptr;
-        NativeHandle m_event_handle = NULL_HANDLE;
+        std::atomic<NativeHandle> m_event_handle = NULL_HANDLE;
         ConditionVariableCallback m_callback_{*this};
         Callback *m_callback = &m_callback_;
         bool m_added_in_epoll = false;
@@ -1722,23 +1724,24 @@ namespace tinyasync {
             m_ctx = &ctx;
         }
 
-        using callback_type = ConditionVariable;
+        ConditionVariable(ConditionVariable &&) = delete;
+        ConditionVariable operator=(ConditionVariable &&) = delete;
+
         ConditionVariableAwaiter wait(Mutex &mtx);
 
         // thread safe
         void notify_all()
         {
             TINYASYNC_GUARD("Event::notify_all(): ");
-            TINYASYNC_LOG("fd = %d", m_event_handle);
             
-            // inc one on counter
-            // the eventfd will be readable
-            auto event_handle = std::atomic_ref(m_event_handle).load(std::memory_order_relaxed);
+            auto event_handle = m_event_handle.load(std::memory_order_relaxed);
+            TINYASYNC_LOG("fd = %d", event_handle);
+
             if(event_handle) {
                 epoll_event evt;
                 evt.data.ptr = m_callback;
                 evt.events = EPOLLIN | EPOLLONESHOT;
-                TINYASYNC_LOG("EPOLLIN | EPOLLONESHOT, fd = %d", m_event_handle);
+                TINYASYNC_LOG("EPOLLIN | EPOLLONESHOT, fd = %d", event_handle);
                 if (::epoll_ctl(m_ctx->event_poll_handle(), EPOLL_CTL_MOD, event_handle, &evt) < 0)
                 {
                     throw_errno("notify_all can't set event");
@@ -1754,7 +1757,7 @@ namespace tinyasync {
     private:
         void reset()
         {
-            auto event_handle = this->m_event_handle;
+            auto event_handle = this->m_event_handle.load(std::memory_order_relaxed);
             if (event_handle)
             {
                 auto evt = this;
@@ -1799,7 +1802,7 @@ namespace tinyasync {
             
             // inc one on counter
             // the eventfd will be readable
-            auto event_handle = std::atomic_ref(m_event_handle).load(std::memory_order_relaxed);
+            auto event_handle = m_event_handle;
             if(event_handle) {
                 epoll_event evt;
                 evt.data.ptr = m_callback;

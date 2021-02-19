@@ -643,13 +643,13 @@ namespace tinyasync
             event->m_added_in_epoll = true;
         }
 
-        TINYASYNC_LOG("await fd = %d", event->m_event_handle);
+        TINYASYNC_LOG("await fd = %d", event->m_event_handle.load(std::memory_order_relaxed));
         auto evt = m_condv;
 
         // insert into the head of awaiter list
-        auto head = evt->m_awaiter;
+        auto head = evt->m_awaiter.load(std::memory_order_relaxed);
         this->m_next = head;
-        evt->m_awaiter = this;
+        evt->m_awaiter.store(this, std::memory_order_relaxed);
 
         m_resume_coroutine = h;
 
@@ -663,21 +663,20 @@ namespace tinyasync
 
     void ConditionVariableAwaiter::await_resume() {
         TINYASYNC_GUARD("ConditionVariableAwaiter::await_resume(): ");
-        TINYASYNC_LOG("fd = %d", m_condv->m_event_handle);
+        TINYASYNC_LOG("fd = %d", m_condv->m_event_handle.load());
         TINYASYNC_ASSERT(m_mtx->is_locked());
     }
 
     void ConditionVariableCallback::on_callback(IoEvent &)
     {
-        auto condv = m_condv;
+        auto condv = (ConditionVariable*)((char*)this - offsetof(ConditionVariable, m_callback));
 
         TINYASYNC_GUARD("ConditionVariableCallback::on_callback(): ");
-        TINYASYNC_LOG("fd = %d", condv->m_event_handle);
-        TINYASYNC_ASSERT(condv->m_event_handle);
+        TINYASYNC_LOG("fd = %d", condv->m_event_handle.load());
+        TINYASYNC_ASSERT(condv->m_event_handle.load());
 
         // remove all awaiters
-        std::atomic_ref<ConditionVariableAwaiter*> awaiter_(condv->m_awaiter);
-        auto awaiter = awaiter_.exchange(nullptr, std::memory_order_relaxed);
+        auto awaiter = condv->m_awaiter.exchange(nullptr, std::memory_order_relaxed);
 
 
         for (; awaiter;)
