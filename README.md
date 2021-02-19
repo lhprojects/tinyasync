@@ -101,7 +101,7 @@ You need to include tinyasync as following:
 ```c++
 #include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/basics.h>
 #include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/task.h>
-#include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/tinyasync.h>
+#include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/awaiters.h>
 #include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/mutex.h>
 <your code>
 ```
