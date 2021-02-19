@@ -17,6 +17,7 @@ namespace std {
 
 #endif
 
+#include <atomic>
 #include <exception>
 #include <utility>
 #include <map>
@@ -36,6 +37,8 @@ namespace std {
 #include <mutex>
 #include <atomic>
 #include <chrono>
+#include <functional>
+#include <new>
 
 #ifdef _WIN32
 
@@ -58,10 +61,40 @@ namespace std {
 #include <fcntl.h>
 #include <arpa/inet.h>
 #include <cxxabi.h>
+#include <sys/eventfd.h>
+#include <pthread.h>
 
 using SystemHandle = int;
 
 #endif
+
+
+#ifndef TINYASYNC_NDEBUG
+
+#ifndef TINYASYNC_DEF_NDEBUG
+
+#ifdef NDEBUG
+#define TINYASYNC_NDEBUG NDEBUG
+#endif // NDEBUG
+
+#else // TINYASYNC_DEF_NDEBUG
+
+#if TINYASYNC_DEF_NDEBUG
+#define TINYASYNC_NDEBUG 1
+#endif // TINYASYNC_DEF_NDEBUG
+
+#endif // TINYASYNC_DEF_NDEBUG
+
+#endif // TINYASYNC_NDEBUG
+
+
+
+#ifdef TINYASYNC_NDEBUG
+#define TINYASYNC_ASSERT(x)  ((void)0)
+#else
+#define TINYASYNC_ASSERT(x)  assert(x)
+#endif
+
 
 // Coroutine Basics
 
@@ -201,6 +234,7 @@ namespace tinyasync {
         return t;
     };
 
+    // double checking lock
     template<class T, class L>
     TINYASYNC_VCINL T initialize_once(std::atomic<T>& atom, T uninitialized_flag, std::mutex& mtx, L func)
     {
@@ -235,6 +269,8 @@ namespace tinyasync {
 
     class TimerAwaiter;
     class IoContext;
+
+    class Mutex;
     
     template<class T>
     class Task;
@@ -350,6 +386,18 @@ namespace tinyasync {
     template<class Promise = void>
     struct ThisCoroutineAwaiter : std::suspend_always {
 
+        template<class P>
+        bool await_suspend(std::coroutine_handle<P> h)
+        {
+            if constexpr (std::is_same_v<void, Promise>) {
+                m_coroutine = h;
+            } else {
+                Promise &promise = h.promise();
+                m_coroutine = std::coroutine_handle<Promise>::from_promise(promise);
+            }
+            return false;
+        }
+        
         bool await_suspend(std::coroutine_handle<Promise> h)
         {
             m_coroutine = h;
@@ -596,9 +644,11 @@ namespace tinyasync {
     };
 #elif defined(__unix__)
 
-    using IoEvent = epoll_event;
+    struct IoEvent : epoll_event
+    {
+    };
 
-    std::string ioe2str(IoEvent& evt)
+    std::string ioe2str(epoll_event& evt)
     {
         std::string str;
         str += ((evt.events & EPOLLIN) ? "EPOLLIN " : "");;
@@ -618,6 +668,161 @@ namespace tinyasync {
         return str;
     }
 #endif
+
+    class ListNode
+    {
+    public:
+        ListNode *m_next = nullptr;
+    };
+
+    struct Queue
+    {
+        ListNode m_before_head;
+        ListNode *m_tail = nullptr;
+
+#ifndef TINYASYNC_NDEBUG
+        std::atomic<int> queue_size = 0;
+#endif
+
+        std::size_t count()
+        {
+            std::size_t n = 0;
+            for (auto h = m_before_head.m_next; h; h = h->m_next)
+            {
+                n += 1;
+            }
+            return n;
+        }
+
+        // consume a dangling ndoe
+        void push(ListNode *node)
+        {
+            TINYASYNC_ASSERT(node);
+            node->m_next = nullptr;
+            auto tail = this->m_tail;
+            if (tail == nullptr)
+            {
+                tail = &m_before_head;
+            }
+            tail->m_next = node;
+            this->m_tail = node;
+
+#ifndef TINYASYNC_NDEBUG
+            ++queue_size;
+#endif
+        }
+
+        // return a dangling node
+        // node->m_next is not meaningful
+        ListNode *pop(bool &is_empty)
+        {
+            auto *before_head = &this->m_before_head;
+            auto head = before_head->m_next;
+            if(head) {
+                auto new_head = head->m_next;
+                before_head->m_next = new_head;
+                bool is_empty_ = new_head == nullptr;
+                if (is_empty_)
+                {
+    #ifndef TINYASYNC_NDEBUG
+                    TINYASYNC_ASSERT(queue_size == 1);
+    #endif
+                    m_tail = nullptr;
+                }
+
+    #ifndef TINYASYNC_NDEBUG
+                --queue_size;
+    #endif
+    
+                is_empty = is_empty_;
+            }
+            return head;
+        }
+
+        // return a dangling node
+        // node->m_next is not meaningful
+        ListNode *pop_nocheck(bool &is_empty)
+        {
+            auto *before_head = &this->m_before_head;
+            auto head = before_head->m_next;
+            TINYASYNC_ASSERT(head);
+            if(true) {
+                auto new_head = head->m_next;
+                before_head->m_next = new_head;
+                bool is_empty_ = new_head == nullptr;
+                if (is_empty_)
+                {
+    #ifndef TINYASYNC_NDEBUG
+                    TINYASYNC_ASSERT(queue_size == 1);
+    #endif
+                    m_tail = nullptr;
+                }
+
+    #ifndef TINYASYNC_NDEBUG
+                --queue_size;
+    #endif
+    
+                is_empty = is_empty_;
+            }
+            return head;
+        }
+    };
+
+
+    class TicketSpinLock
+    {
+    public:
+        void lock()
+        {
+            const auto ticket_no = m_tail_ticket_no.fetch_add(1, std::memory_order_relaxed);
+    
+            while (m_head_ticket_no.load(std::memory_order_acquire) != ticket_no) {
+                //
+            }
+        }
+    
+        void unlock()
+        {
+            const auto ticket_no = m_head_ticket_no.load(std::memory_order_relaxed)+1;
+            m_head_ticket_no.store(ticket_no, std::memory_order_release);
+        }
+    
+    private:
+        std::atomic_size_t m_head_ticket_no = 0;
+        std::atomic_size_t m_tail_ticket_no = 0;
+    };
+
+
+    class SysSpinLock {
+        pthread_spinlock_t m_sys_spinlock;
+    public:
+
+        SysSpinLock() {
+            pthread_spin_init(&m_sys_spinlock, PTHREAD_PROCESS_PRIVATE);
+        }
+
+        void lock() {
+            pthread_spin_lock(&m_sys_spinlock);
+        }
+
+        void unlock() {
+            pthread_spin_unlock(&m_sys_spinlock);
+        }
+
+        ~SysSpinLock() {
+            pthread_spin_destroy(&m_sys_spinlock);
+        }
+
+    };
+
+    struct NaitveLock
+    {
+        void lock() { }
+        void unlock() { }
+    };
+
+
+    using DefaultSpinLock = SysSpinLock;
 
 }
 

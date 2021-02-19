@@ -102,10 +102,11 @@ You need to include tinyasync as following:
 #include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/basics.h>
 #include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/task.h>
 #include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/tinyasync.h>
+#include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/mutex.h>
 <your code>
 ```
 
-* flags with clang (https://gcc.godbolt.org/z/zTvE8x)
+* flags with clang
 ```
 -O2 -std=c++2a -fcoroutines-ts -stdlib=libc++ -DNDEBUG
 ```
@@ -113,7 +114,7 @@ You need to include tinyasync as following:
 ```
 -O2 -std=c++2a -fcoroutines -DNDEBUG
 ```
-* flags with MSVC (https://gcc.godbolt.org/z/K8efKh)
+* flags with MSVC
 ```
 /std:c++latest /O2
 ```

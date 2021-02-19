@@ -9,13 +9,12 @@
 #include "task.h"
 #endif 
 
+
 namespace tinyasync {
+
+
     struct Callback
     {
-        void callback(IoEvent &evt)
-        {
-            this->m_callback(this, evt);
-        }
 
         // we don't use virtual table for two reasons
         //     1. virtual function let Callback to be non-standard_layout, though we have solution without offsetof using inherit
@@ -24,9 +23,11 @@ namespace tinyasync {
 
         CallbackPtr m_callback;
 
-#if !defined(NDEBUG)
-        char const* m_info = "not defined";
-#endif
+        void callback(IoEvent &evt)
+        {
+            this->m_callback(this, evt);
+        }
+
 
 #ifdef _WIN32
         OVERLAPPED m_overlapped;
@@ -39,8 +40,7 @@ namespace tinyasync {
         }
 #endif
     };
-
-    // requried by offsetof
+    static constexpr std::size_t Callback_size = sizeof(Callback);
     static_assert(std::is_standard_layout_v<Callback>);
 
     struct CallbackImplBase : Callback
@@ -68,60 +68,110 @@ namespace tinyasync {
             subclass_this->on_callback(evt);
         }
     };
+    static constexpr std::size_t CallbackImplBase_size = sizeof(CallbackImplBase);
+    static_assert(std::is_standard_layout_v<CallbackImplBase>);
 
+    struct PostTask
+    {
+        // use internally
+        ListNode m_node;
+        // your callback
+        Callback *m_callback;
+        // argument to callback
+        IoEvent m_io_event;
+
+        static PostTask *from_node(ListNode *node) {
+            return (PostTask *)((char*)node - offsetof(PostTask, m_node));
+        }
+    };
+
+
+    class IoCtxBase
+    {
+    public:
+        virtual void run() = 0;
+        virtual void post_task(PostTask *) = 0;
+        virtual void request_abort() = 0;
+        virtual ~IoCtxBase() { }
+
+        NativeHandle m_epoll_handle = NULL_HANDLE;
+        NativeHandle event_poll_handle()
+        {
+            return m_epoll_handle;
+        }
+    };
+
+
+    struct SingleThreadTrait {
+        using spinlock_type = NaitveLock;
+        static constexpr bool multiple_thread = false;
+    };
+
+    struct MultiThreadTrait {
+        using spinlock_type = DefaultSpinLock;
+        static constexpr bool multiple_thread = false;
+    };
+
+    template<class CtxTrait>
+    class IoCtx : public IoCtxBase
+    {
+        IoCtx(IoCtx&& r) = delete;
+        IoCtx& operator=(IoCtx&& r) = delete;
+
+        NativeHandle m_wakeup_handle = NULL_HANDLE;
+
+        typename CtxTrait::spinlock_type m_que_lock;
+
+        std::size_t m_thread_waiting = 0;
+        std::size_t m_task_queue_size = 0;
+        Queue m_task_queue;
+        bool m_abort_requested = false;
+        static const bool k_multiple_thread = CtxTrait::multiple_thread;
+
+    public:
+        IoCtx();
+        void post_task(PostTask *callback) override;
+        void request_abort() override;
+        void run() override;
+        ~IoCtx() override;
+
+    };
 
     class IoContext
     {
-
-        NativeHandle m_native_handle = NULL_HANDLE;
-        bool m_abort_requested = false;
-
+        NativeHandle m_epoll_handle = NULL_HANDLE;
+        std::unique_ptr<IoCtxBase> m_ctx;
     public:
-        IoContext();
 
-        std::list<Task<> > m_post_tasks;
-        void post_task(Task<> task)
-        {
-            m_post_tasks.emplace_back(std::move(task));
+        template<bool multiple_thread = false>
+        IoContext(std::integral_constant<bool, multiple_thread> = std::false_type())
+        {            
+            // if you needn't multiple thread
+            // you don't have to link with e.g. pthread library
+            if constexpr (multiple_thread) {                
+                m_ctx = std::make_unique<IoCtx<MultiThreadTrait> >();
+            } else {
+                m_ctx = std::make_unique<IoCtx<SingleThreadTrait> >();
+            }
+            m_epoll_handle = m_ctx->m_epoll_handle;
+        }
+        
+        void run() {
+            m_ctx->run();
+        }
+        void post_task(PostTask *task) {
+            m_ctx->post_task(task);
+        }
+        void request_abort() {
+            m_ctx->request_abort();
         }
 
-        IoContext(IoContext&& r)
-        {
-            this->m_native_handle = r.m_native_handle;
-            r.m_native_handle = NULL_HANDLE;
+        NativeHandle event_poll_handle() {
+            return m_epoll_handle;
         }
-
-        IoContext& operator=(IoContext&& r)
-        {
-            this->~IoContext();
-            this->m_native_handle = r.m_native_handle;
-            r.m_native_handle = NULL_HANDLE;
-            return *this;
-        }
-
-        ~IoContext()
-        {
-#ifdef _WIN32
-
-            WSACleanup();
-#elif defined(__unix__)
-            close_handle(m_native_handle);
-#endif
-        }
-
-        NativeHandle handle() const
-        {
-            return m_native_handle;
-        }
-
-        void request_abort()
-        {
-            m_abort_requested = true;
-        }
-
-        void run();
 
     };
+
 
     struct Protocol
     {
@@ -403,6 +453,43 @@ namespace tinyasync {
         bool m_added_to_event_pool = false;
 
     public:
+
+
+        void register_()
+        {
+            auto m_conn = this;
+            epoll_event evt;
+            if(m_conn->m_recv_awaiter) {
+                evt.events |= EPOLLIN;
+            }
+            if(m_conn->m_send_awaiter) {
+                evt.events |= EPOLLOUT;
+            }
+            if(!evt.events) {
+                return;
+            }
+            evt.events |= EPOLLONESHOT;
+            evt.data.ptr = &m_conn->m_callback;
+
+            int epoll_clt_addmod;
+            if(!m_conn->m_added_to_event_pool) {
+                epoll_clt_addmod = EPOLL_CTL_ADD;
+                TINYASYNC_LOG("epoll_ctl(EPOLL_CTL_ADD, %s) for conn_handle = %d",
+                    ioe2str(evt).c_str(), m_conn->m_conn_handle);
+                m_conn->m_added_to_event_pool = true;
+            } else {
+                epoll_clt_addmod = EPOLL_CTL_MOD;
+                TINYASYNC_LOG("epoll_ctl(EPOLL_CTL_MOD, %s) for conn_handle = %d",
+                    ioe2str(evt).c_str(), m_conn->m_conn_handle);
+            }
+
+            int clterr = epoll_ctl(m_ctx->event_poll_handle(), epoll_clt_addmod, m_conn->m_conn_handle, &evt);
+            if(clterr == -1) {
+                TINYASYNC_LOG("epoll_ctl failed for conn_handle = %d", m_conn->m_conn_handle);
+                throw_errno(format("can't epoll_clt for conn_handle = %s", socket_c_str(m_conn->m_conn_handle)));
+            }
+        }
+
         void reset()
         {
             if (m_conn_handle) {
@@ -475,7 +562,7 @@ namespace tinyasync {
 
 #elif defined(__unix__)
 
-        if ((evt.events | EPOLLIN) && m_conn->m_recv_awaiter) {
+        if ((evt.events & EPOLLIN) && m_conn->m_recv_awaiter) {
             // we want to read and it's ready to read
 
             TINYASYNC_LOG("ready to read for conn_handle %d", m_conn->m_conn_handle);
@@ -506,7 +593,7 @@ namespace tinyasync {
 
             }
 
-        } else if ((evt.events | EPOLLOUT) && m_conn->m_send_awaiter) {
+        } else if ((evt.events & EPOLLOUT) && m_conn->m_send_awaiter) {
             // we want to send and it's ready to read
 
             auto awaiter = m_conn->m_send_awaiter;
@@ -571,9 +658,6 @@ namespace tinyasync {
         m_conn->m_recv_awaiter = this;
         TINYASYNC_LOG("set recv_awaiter of conn(%p) to %p", m_conn, m_conn->m_recv_awaiter);
 
-#ifndef NDEBUG
-        m_conn->m_callback.m_info = "recv";
-#endif
 
 #ifdef _WIN32
 
@@ -604,26 +688,7 @@ namespace tinyasync {
         return true;
 
 #elif defined(__unix__)
-
-        epoll_event evt;
-        evt.data.ptr = &m_conn->m_callback;
-        evt.events = EPOLLIN | EPOLLONESHOT;
-
-        int epoll_clt_addmod;
-        if(!m_conn->m_added_to_event_pool) {
-            epoll_clt_addmod = EPOLL_CTL_ADD;
-            TINYASYNC_LOG("epoll_ctl(EPOLL_CTL_ADD, EPOOLIN|EPOLLONESHOT) for conn_handle = %d", m_conn->m_conn_handle);
-            m_conn->m_added_to_event_pool = true;
-        } else {
-            epoll_clt_addmod = EPOLL_CTL_MOD;
-            TINYASYNC_LOG("epoll_ctl(EPOLL_CTL_MOD, EPOOLIN|EPOLLONESHOT) for conn_handle = %d", m_conn->m_conn_handle);
-        }
-
-        int clterr = epoll_ctl(m_ctx->handle(), epoll_clt_addmod, m_conn->m_conn_handle, &evt);
-        if(clterr == -1) {
-            TINYASYNC_LOG("epoll_ctl failed for conn_handle = %d", m_conn->m_conn_handle);
-            throw_errno(format("can't epoll_clt for conn_handle = %s", socket_c_str(m_conn->m_conn_handle)));
-        }
+        m_conn->register_();
         return true;
 #endif
 
@@ -637,7 +702,7 @@ namespace tinyasync {
         // pop from front of list
         m_conn->m_recv_awaiter = m_conn->m_recv_awaiter->m_next;
         TINYASYNC_LOG("set recv_awaiter of conn(%p) to %p", m_conn, m_conn->m_recv_awaiter);
-
+        m_conn->register_();
         return m_bytes_transfer;
     }
 
@@ -660,10 +725,6 @@ namespace tinyasync {
         this->m_next = m_conn->m_send_awaiter;
         m_conn->m_send_awaiter = this;
         TINYASYNC_LOG("set send_awaiter of conn(%p) to %p", m_conn, m_conn->m_send_awaiter);
-
-#ifndef NDEBUG
-        m_conn->m_callback.m_info = "send";
-#endif
 
 #ifdef _WIN32
 
@@ -695,25 +756,7 @@ namespace tinyasync {
         return true;
 
 #elif defined(__unix__)
-        epoll_event evt;
-        evt.data.ptr = &m_conn->m_callback;
-        evt.events = EPOLLOUT | EPOLLONESHOT;
-
-        int epoll_clt_addmod;
-        if(!m_conn->m_added_to_event_pool) {
-            epoll_clt_addmod = EPOLL_CTL_ADD;
-            TINYASYNC_LOG("epoll_ctl(EPOLL_CTL_ADD, EPOLLOUT|EPOLLONESHOT) for conn_handle = %d", m_conn->m_conn_handle);
-            m_conn->m_added_to_event_pool = true;
-        } else {
-            epoll_clt_addmod = EPOLL_CTL_MOD;
-            TINYASYNC_LOG("epoll_ctl(EPOLL_CTL_MOD, EPOLLOUT|EPOLLONESHOT) for conn_handle = %d", m_conn->m_conn_handle);
-        }
-
-        int clterr = epoll_ctl(m_ctx->handle(), epoll_clt_addmod, m_conn->m_conn_handle, &evt);
-        if(clterr == -1) {
-            TINYASYNC_LOG("epoll_ctl failed for conn_handle = %d", m_conn->m_conn_handle);
-            throw_errno(format("can't epoll_clt for conn_handle = %s", socket_c_str(m_conn->m_conn_handle)));
-        }
+        m_conn->register_();
         return true;
 #endif
     }
@@ -725,6 +768,7 @@ namespace tinyasync {
         m_conn->m_send_awaiter = m_conn->m_send_awaiter->m_next;
         TINYASYNC_LOG("set recv_awaiter of conn(%p) to %p", m_conn, m_conn->m_send_awaiter);
 
+        m_conn->register_();
         return m_bytes_transfer;
     }
 
@@ -805,7 +849,7 @@ namespace tinyasync {
                 //
 #elif defined(__unix__)
                 if (m_added_to_event_pool) {
-                    auto ctlerr = epoll_ctl(m_ctx->handle(), EPOLL_CTL_DEL, m_socket, NULL);
+                    auto ctlerr = epoll_ctl(m_ctx->event_poll_handle(), EPOLL_CTL_DEL, m_socket, NULL);
                     if (ctlerr == -1) {
                         auto what = format("can't remove (from epoll) socket %x", m_socket);
                         throw_errno(what);
@@ -964,10 +1008,6 @@ namespace tinyasync {
         m_suspend_coroutine = h;
         TINYASYNC_GUARD("AcceptorAwaiter::await_suspend(): ");
 
-#ifndef NDEBUG
-        m_acceptor->m_callback.m_info = "send";
-#endif
-
 #ifdef _WIN32
 
         NativeSocket listen_socket = m_acceptor->m_socket;
@@ -1011,7 +1051,7 @@ namespace tinyasync {
             // level triger by default
             // one thread one event
             evt.events = EPOLLIN | EPOLLEXCLUSIVE;
-            auto ctlerr = epoll_ctl(m_acceptor->m_ctx->handle(), EPOLL_CTL_ADD, listenfd, &evt);
+            auto ctlerr = epoll_ctl(m_acceptor->m_ctx->event_poll_handle(), EPOLL_CTL_ADD, listenfd, &evt);
             if (ctlerr == -1) {
                 TINYASYNC_LOG("can't listen %s", socket_c_str(listenfd));
                 throw_errno(format("can't listen %x", listenfd));
@@ -1392,7 +1432,7 @@ namespace tinyasync {
         evt.data.ptr = &m_connector->m_callback;
         // level triger by default
         evt.events = EPOLLOUT;
-        auto clterr = epoll_ctl(m_connector->m_ctx->handle(), EPOLL_CTL_ADD, m_connector->m_socket, &evt);
+        auto clterr = epoll_ctl(m_connector->m_ctx->event_poll_handle(), EPOLL_CTL_ADD, m_connector->m_socket, &evt);
         if (clterr == -1) {
             throw_errno(format("epoll_ctl(EPOLLOUT) failed for conn_handle = %d", m_connector->m_socket));
         }
@@ -1444,9 +1484,22 @@ namespace tinyasync {
         std::chrono::nanoseconds m_elapse; // mili-second
         NativeHandle m_timer_handle = NULL_HANDLE;
         std::coroutine_handle<TaskPromiseBase> m_suspend_coroutine;
-        TimerCallback m_callback = this;
+        TimerCallback m_callback_ = this;
+        Callback *m_callback = &m_callback_;
 
     public:
+        // interface to wait
+        using callback_type = TimerCallback;
+
+        TimerCallback *get_callback() {
+            return &m_callback_;
+        }
+
+        void set_callback(Callback *c) {
+            m_callback = c;
+        }
+
+
         // elapse in micro-second
         TimerAwaiter(IoContext& ctx, std::chrono::nanoseconds elapse) : m_ctx(&ctx), m_elapse(elapse)
         {
@@ -1466,7 +1519,7 @@ namespace tinyasync {
             // timer thread have done cleaning up
 #elif defined(__unix__)
             // remove from epoll list
-            epoll_ctl(m_ctx->handle(), m_timer_handle, EPOLL_CTL_DEL, NULL);
+            epoll_ctl(m_ctx->event_poll_handle(), m_timer_handle, EPOLL_CTL_DEL, NULL);
             close(m_timer_handle);
 #endif
         }
@@ -1587,11 +1640,10 @@ namespace tinyasync {
                     throw_errno("can't set timer");
                 }
 
-                auto epfd = m_ctx->handle();
-                assert(epfd);
+                auto epfd = m_ctx->event_poll_handle();
 
                 epoll_event evt;
-                evt.data.ptr = &m_callback;
+                evt.data.ptr = m_callback;
                 evt.events = EPOLLIN;
                 auto fd3 = epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &evt);
 
@@ -1616,7 +1668,227 @@ namespace tinyasync {
         TINYASYNC_RESUME(m_awaiter->m_suspend_coroutine);
     }
 
-    IoContext::IoContext()
+
+
+
+    TimerAwaiter async_sleep(IoContext& ctx, std::chrono::nanoseconds elapse)
+    {
+        return TimerAwaiter(ctx, elapse);
+    }
+
+    class Event;
+    class EventAwaiter;
+    class ConditionVariable;
+    class ConditionVariableAwaiter;
+
+    class EventCallback : public CallbackImplBase
+    {
+    public:
+        Event *m_event;
+        EventCallback(Event &evt) : CallbackImplBase(this)
+        {
+            m_event = &evt;
+        }
+
+        void on_callback(IoEvent &evt);
+    };
+    static_assert(std::is_standard_layout_v<CallbackImplBase>);
+    //static_assert(std::is_standard_layout_v<EventCallback>);
+
+    class ConditionVariableCallback : public CallbackImplBase
+    {
+    public:
+        ConditionVariable *m_condv;
+        ConditionVariableCallback(ConditionVariable &condv) : CallbackImplBase(this)
+        {
+            m_condv = &condv;
+        }
+        void on_callback(IoEvent &);
+    };
+    static_assert(std::is_standard_layout_v<CallbackImplBase>);
+
+
+    class ConditionVariable {
+    public:
+        ConditionVariableAwaiter *m_awaiter = nullptr;
+        IoContext *m_ctx = nullptr;
+        NativeHandle m_event_handle = NULL_HANDLE;
+        ConditionVariableCallback m_callback_{*this};
+        Callback *m_callback = &m_callback_;
+        bool m_added_in_epoll = false;
+
+        ConditionVariable(IoContext &ctx)
+        {
+            m_ctx = &ctx;
+        }
+
+        using callback_type = ConditionVariable;
+        ConditionVariableAwaiter wait(Mutex &mtx);
+
+        // thread safe
+        void notify_all()
+        {
+            TINYASYNC_GUARD("Event::notify_all(): ");
+            TINYASYNC_LOG("fd = %d", m_event_handle);
+            
+            // inc one on counter
+            // the eventfd will be readable
+            auto event_handle = std::atomic_ref(m_event_handle).load(std::memory_order_relaxed);
+            if(event_handle) {
+                epoll_event evt;
+                evt.data.ptr = m_callback;
+                evt.events = EPOLLIN | EPOLLONESHOT;
+                TINYASYNC_LOG("EPOLLIN | EPOLLONESHOT, fd = %d", m_event_handle);
+                if (::epoll_ctl(m_ctx->event_poll_handle(), EPOLL_CTL_MOD, event_handle, &evt) < 0)
+                {
+                    throw_errno("notify_all can't set event");
+                }
+            }
+        }
+
+        ~ConditionVariable()
+        {
+            reset();
+        }
+
+    private:
+        void reset()
+        {
+            auto event_handle = this->m_event_handle;
+            if (event_handle)
+            {
+                auto evt = this;
+                auto ctx = evt->m_ctx;
+
+                if (m_added_in_epoll)
+                {
+                    if (::epoll_ctl(ctx->event_poll_handle(), EPOLL_CTL_DEL, event_handle, NULL) == -1)
+                    {
+                        throw_errno("can't remove event from poll");
+                    }
+                    m_added_in_epoll = false;
+                }
+                close_handle(event_handle);
+                m_event_handle = NULL_HANDLE;
+            }
+        }
+    };
+
+    class Event
+    {
+    public:
+        EventAwaiter *m_awaiter = nullptr;
+        IoContext *m_ctx = nullptr;
+        NativeHandle m_event_handle = NULL_HANDLE;
+        EventCallback m_callback_{*this};
+        Callback *m_callback = &m_callback_;
+        bool m_added_in_epoll = false;
+
+        Event(IoContext &ctx)
+        {
+            m_ctx = &ctx;
+        }
+
+        using callback_type = EventCallback;
+        EventAwaiter operator co_await();        
+
+        void notify_all()
+        {
+            TINYASYNC_GUARD("Event::notify_all(): ");
+            TINYASYNC_LOG("fd = %d", m_event_handle);
+            
+            // inc one on counter
+            // the eventfd will be readable
+            auto event_handle = std::atomic_ref(m_event_handle).load(std::memory_order_relaxed);
+            if(event_handle) {
+                epoll_event evt;
+                evt.data.ptr = m_callback;
+                evt.events = EPOLLIN | EPOLLONESHOT;
+                if (epoll_ctl(m_ctx->event_poll_handle(), EPOLL_CTL_MOD, event_handle, &evt) < 0)
+                {
+                    throw_errno("can't set event");
+                }
+            }
+        }
+
+        ~Event()
+        {
+            reset();
+        }
+
+    private:
+        void reset()
+        {
+            auto event_handle = this->m_event_handle;
+            if (event_handle)
+            {
+                auto evt = this;
+                auto ctx = evt->m_ctx;
+
+                if (m_added_in_epoll)
+                {
+                    if (::epoll_ctl(ctx->event_poll_handle(), EPOLL_CTL_DEL, event_handle, NULL) == -1)
+                    {
+                        throw_errno("can't remove event from poll");
+                    }
+                    m_added_in_epoll = false;
+                }
+                close_handle(event_handle);
+                m_event_handle = NULL_HANDLE;
+            }
+        }
+    };
+
+
+    class EventAwaiter
+    {
+        friend class EventCallback;
+        friend class Event;
+        EventAwaiter *m_next = nullptr;
+        Event *m_event = nullptr;
+        std::coroutine_handle<TaskPromiseBase> m_resume_coroutine = nullptr;
+
+    public:
+
+        using callback_type = EventCallback;
+
+        EventCallback *get_callback() {
+            return &m_event->m_callback_;
+        }
+
+        void set_callback(Callback *c) {
+            m_event->m_callback = c;
+        }
+
+        EventAwaiter(Event &evt)
+        {
+            m_event = &evt;
+        }
+
+        bool await_ready()
+        {
+            return false;
+        }
+
+        template <class Promise>
+        void await_suspend(std::coroutine_handle<Promise> h)
+        {
+            await_suspend(h.promise().coroutine_handle_base());
+        }
+
+        void await_suspend(std::coroutine_handle<TaskPromiseBase> h);
+
+        void await_resume();
+    };
+
+
+
+} // namespace tinyasync
+
+namespace tinyasync {
+
+    template<class T>
+    IoCtx<T>::IoCtx()
     {
 
         TINYASYNC_GUARD("IoContext.IoContext(): ");
@@ -1641,23 +1913,115 @@ namespace tinyasync {
         if (fd == -1) {
             throw_errno("IoContext().IoContext(): can't create epoll");
         }
-        m_native_handle = fd;
+        m_epoll_handle = fd;
+
+        fd = eventfd(1, EFD_NONBLOCK);
+        if(fd == -1) {
+            throw_errno("IoContext().IoContext(): can't create eventfd");
+        }
+        m_wakeup_handle = fd;
+
 
 #endif
         TINYASYNC_LOG("event poll created");
     }
 
-    void IoContext::run()
+    template<class T>
+    IoCtx<T>::~IoCtx()
     {
+#ifdef _WIN32
+
+        WSACleanup();
+#elif defined(__unix__)
+
+        if(m_wakeup_handle) {
+            ::epoll_ctl(m_epoll_handle, EPOLL_CTL_DEL, m_wakeup_handle, NULL);
+            close_handle(m_wakeup_handle);
+        }
+        close_handle(m_epoll_handle);
+#endif
+    }
+
+    template<class T>
+    void IoCtx<T>::post_task(PostTask *task)
+    {
+        
+        if constexpr (k_multiple_thread) {
+            m_que_lock.lock();
+            m_task_queue.push(&task->m_node);
+            m_task_queue_size += 1;
+            auto thread_wating = m_thread_waiting;
+            m_que_lock.unlock();
+
+            if(thread_wating > 0) {
+                epoll_event evt;
+                evt.data.ptr = (void*)1;
+                evt.events = EPOLLIN | EPOLLONESHOT;
+                epoll_ctl(m_epoll_handle, EPOLL_CTL_MOD, m_wakeup_handle, &evt);
+            }
+        } else {
+            m_task_queue.push(&task->m_node);
+        }
+    }
+
+
+
+    template<class T>
+    void IoCtx<T>::request_abort()
+    {
+        m_que_lock.lock();            
+        m_abort_requested = true;
+        m_que_lock.unlock();
+    }
+
+    template<class T>
+    void IoCtx<T>::run()
+    {
+
+
         TINYASYNC_GUARD("IoContex::run(): ");
+        int const maxevents = 5;
 
-        for (; !m_abort_requested;) {
+        for (;;)
+        {
 
-            if (!m_post_tasks.empty()) {
-                auto task = std::move(m_post_tasks.front());
-                m_post_tasks.pop_front();
-                co_spawn(std::move(task));
+            if constexpr (k_multiple_thread) {
+                m_que_lock.lock();
+            }
+            bool empty__;
+            auto node = m_task_queue.pop(empty__);
+            bool abort_requested = m_abort_requested;
+
+            if(abort_requested) TINYASYNC_UNLIKELY {
+                if constexpr (k_multiple_thread) {
+                    m_que_lock.unlock();
+                }
+                // very rude ...
+                // TODO: clean up more carefully
+                break;
+            }
+
+            if (node) {
+                // we have task to do
+                if constexpr (k_multiple_thread) {
+                    m_task_queue_size -= 1;
+                    m_que_lock.unlock();
+                }
+
+                auto *task = PostTask::from_node(node);
+                try {
+                    task->m_callback->callback(task->m_io_event);
+                } catch(...) {
+                    fprintf(stderr, "exception: %s", to_string(std::current_exception()).c_str());
+                    std::terminate();
+                }
             } else {
+                // no task
+                // blocking by epoll_wait
+                if constexpr (k_multiple_thread) {
+                    m_thread_waiting += 1;             
+                    m_que_lock.unlock();
+                }
 
                 TINYASYNC_LOG("waiting event ...");
 
@@ -1679,41 +2043,101 @@ namespace tinyasync {
 
 #elif defined(__unix__)
 
-                int const maxevents = 5;
-                epoll_event events[maxevents];
-                auto epfd = m_native_handle;
+                IoEvent events[maxevents];
+                const auto epfd = this->event_poll_handle();
                 int const timeout = -1; // indefinitely
-
+                
                 int nfds = epoll_wait(epfd, (epoll_event*)events, maxevents, timeout);
+                
 
-                if (nfds == -1) {
-                    throw_errno("epoll_wait error");
+                if constexpr (k_multiple_thread) {
+                    m_que_lock.lock();
+                    m_thread_waiting -= 1;       
+                    const auto task_queue_size = m_task_queue_size;         
+                    m_que_lock.unlock();
+                    
+                    if (nfds == -1) {
+                        throw_errno("epoll_wait error");
+                    }
+                    
+                    // give compiler a hint
+                    if(maxevents == 1) {
+                        nfds = 1;
+                    }
+
+                    // let's have a overview of event
+                    size_t effective_event = 0;
+                    size_t wakeup_event = 0;
+                    for(auto i = 0; i < nfds; ++i) {
+                        auto& evt = events[i];
+                        auto callback = (Callback*)evt.data.ptr;
+                        if(callback == (void*)1) {
+                            wakeup_event = 1;
+                            ++i;
+                            for(;i < nfds; ++i) {
+                                auto& evt = events[i];
+                                auto callback = (Callback*)evt.data.ptr;
+                                if(callback == (void*)1) {
+                                    //
+                                } else {
+                                    effective_event = 1;
+                                    break;
+                                }
+                            }
+                            break;
+                        } else {
+                            effective_event = 1;
+                            ++i;
+                            for(;i < nfds; ++i) {
+                                auto& evt = events[i];
+                                auto callback = (Callback*)evt.data.ptr;
+                                if(callback == (void*)1) {
+                                    wakeup_event = 1;
+                                }
+                                break;
+                            }
+                            break;
+                        }
+                    }
+
+                    if(wakeup_event && m_thread_waiting && (task_queue_size + effective_event > 1))
+                    {
+                        // this is an wakeup event
+                        // it means we may need to wakeup thread
+                        // this is thread is to deal with effective_event
+                        epoll_event evt;
+                        evt.data.ptr = (void*)1;
+                        evt.events = EPOLLIN | EPOLLONESHOT;
+                        epoll_ctl(m_epoll_handle, EPOLL_CTL_MOD, m_wakeup_handle, &evt);
+                    }
+
                 }
 
-                for (auto i = 0; i < nfds; ++i) {
+                for(auto i = 0; i < nfds; ++i) {
                     auto& evt = events[i];
                     TINYASYNC_LOG("event %d of %d", i, nfds);
                     TINYASYNC_LOG("event = %x (%s)", evt.events, ioe2str(evt).c_str());
                     auto callback = (Callback*)evt.data.ptr;
                     try {
-                        callback->callback(evt);
+                        if(callback > (void*)8) {
+                            callback->callback(evt);
+                        }
                     } catch (...) {
                         printf("exception: %s", to_string(std::current_exception()).c_str());
-                        printf("ignored\n");
+                        std::terminate();
                     }
                 }
-#endif
 
-            }
-        } // for
+    #endif
+
+                } // if(node) ... else
+            } // for
     } // run
 
+}
 
-    TimerAwaiter async_sleep(IoContext& ctx, std::chrono::nanoseconds elapse)
-    {
-        return TimerAwaiter(ctx, elapse);
-    }
-
-} // namespace tinyasync
+#ifndef TINYASYNC_MUTEX_H
+#include "mutex.h"
+#endif
 
 #endif // TINYASYNC_H

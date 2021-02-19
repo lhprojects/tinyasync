@@ -1,18 +1,18 @@
-#define TINYASYNC_TRACE
+//#define TINYASYNC_TRACE
 
 #include <tinyasync/tinyasync.h>
 using namespace tinyasync;
 
-std::coroutine_handle<> suspended_coroutine;
+std::coroutine_handle<TaskPromiseBase> suspended_coroutine;
 int data_;
 
 Task<int> task(Name = "task") {
 
-    suspended_coroutine = co_await this_coroutine<>();
+    suspended_coroutine = co_await this_coroutine<TaskPromiseBase>();
     co_await std::suspend_always{};
     printf("recv %d\n", data_);
 
-    suspended_coroutine = co_await this_coroutine<>();
+    suspended_coroutine = co_await this_coroutine<TaskPromiseBase>();
     co_await std::suspend_always{};
     printf("recv %d\n", data_);
 
@@ -33,13 +33,13 @@ int main() {
 	sync_sleep(std::chrono::seconds(1));
 	data_ = 1;
 	printf("io 1 finished\n");
-	suspended_coroutine.resume();
+	TINYASYNC_RESUME(suspended_coroutine);
 
 	printf("io 2 waiting\n");
 	sync_sleep(std::chrono::seconds(1));
     data_ = 2;
 	printf("io 2 finished\n");
-	suspended_coroutine.resume();
+	TINYASYNC_RESUME(suspended_coroutine);
 
 	return 0;
 

@@ -1,4 +1,4 @@
-//#define TINYASYNC_TRACE
+#define TINYASYNC_TRACE
 
 #include <tinyasync/tinyasync.h>
 #include <string_view>
@@ -78,13 +78,14 @@ Task<> handle_connection(IoContext& ctx, Connection conn, Name="handle_connectio
 		printf("connection will be closed\n");
 	}
 }
+
 Task<> listen(IoContext &ctx, Name="listen") {
 
 	Acceptor acceptor(ctx, Protocol::ip_v4(), Endpoint(Address::Any(), 8899));
 
 	for (;;) {
 		Connection conn = co_await acceptor.async_accept();
-		ctx.post_task(std::move(handle_connection(ctx, std::move(conn))));
+		co_spawn(handle_connection(ctx, std::move(conn)));
 	}
 }
 

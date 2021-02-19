@@ -201,7 +201,7 @@ namespace tinyasync {
     }
         
     template<class Result = void>
-    class Task
+    class [[nodiscard]] Task
     {
     public:
         using promise_type = TaskPromise<Result>;
@@ -339,7 +339,6 @@ namespace tinyasync {
     };
 
 
-
     inline void destroy_and_throw_if_necessary_impl(std::coroutine_handle<TaskPromiseBase> coroutine, char const* func)
     {
 
@@ -348,31 +347,38 @@ namespace tinyasync {
         TINYASYNC_GUARD("`destroy_and_throw_if_necessary(): ");
         TINYASYNC_LOG("`%s` done", c_name(coroutine));
 
-        if (coroutine.promise().m_unhandled_exception) [[ unlikely ]] {
-            auto name_ = c_name(coroutine);
-        // exception is reference counted
-        auto unhandled_exception = promise.m_unhandled_exception;
+        if (coroutine.promise().m_unhandled_exception) TINYASYNC_UNLIKELY {
+                auto name_ = c_name(coroutine);
+            // exception is reference counted
+            auto unhandled_exception = promise.m_unhandled_exception;
 
-        if (promise.is_dangling()) [[ unlikely ]] {
-            coroutine.destroy();
-        }
+            if (promise.is_dangling()) TINYASYNC_UNLIKELY {
+                coroutine.destroy();
+            }
 
-        try {
-            std::rethrow_exception(unhandled_exception);
-        } catch (...) {
-         std::throw_with_nested(std::runtime_error(format("in function <%s>: `%s` thrown, rethrow", func, name_)));
-        }
+            try {
+                std::rethrow_exception(unhandled_exception);
+            } catch (...) {
+            std::throw_with_nested(std::runtime_error(format("in function <%s>: `%s` thrown, rethrow", func, name_)));
+            }
 
         } else {
-            if (promise.is_dangling()) [[ unlikely ]] {
+            if (promise.is_dangling()) TINYASYNC_UNLIKELY {
                 coroutine.destroy();
             }
         }
     }
 
+
+    // if coroutine is done
+    //     if coroutine is dangling coroutine, coroutine is detroyed
+    //     and if coroutine has unhandled_exception, rethrow
+    //     return true
+    // else
+    //     return false
     inline bool destroy_and_throw_if_necessary(std::coroutine_handle<TaskPromiseBase> coroutine, char const* func)
     {
-        if (coroutine.done()) [[ unlikely ]] {
+        if (coroutine.done()) TINYASYNC_UNLIKELY {
             destroy_and_throw_if_necessary_impl(coroutine, func);
             return true;
         }
