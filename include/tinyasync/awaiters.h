@@ -2006,8 +2006,7 @@ namespace tinyasync {
                 try {
                     task->m_callback->callback(task->m_io_event);
                 } catch(...) {
-                    fprintf(stderr, "exception: %s", to_string(std::current_exception()).c_str());
-                    std::terminate();
+                    terminate_with_unhandled_exception();
                 }
             } else {
                 // no task
@@ -2112,13 +2111,12 @@ namespace tinyasync {
                     TINYASYNC_LOG("event %d of %d", i, nfds);
                     TINYASYNC_LOG("event = %x (%s)", evt.events, ioe2str(evt).c_str());
                     auto callback = (Callback*)evt.data.ptr;
-                    try {
-                        if(callback > (void*)8) {
-                            callback->callback(evt);
+                    if(callback > (void*)8) {
+                        try {
+                                callback->callback(evt);
+                        } catch (...) {
+                            terminate_with_unhandled_exception();
                         }
-                    } catch (...) {
-                        printf("exception: %s", to_string(std::current_exception()).c_str());
-                        std::terminate();
                     }
                 }
 
