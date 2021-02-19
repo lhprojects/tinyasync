@@ -100,7 +100,7 @@ namespace tinyasync {
 
     struct MultiThreadTrait {
         using spinlock_type = DefaultSpinLock;
-        static constexpr bool multiple_thread = false;
+        static constexpr bool multiple_thread = true;
     };
 
     template<class CtxTrait>
@@ -1972,6 +1972,7 @@ namespace tinyasync {
     void IoCtx<T>::run()
     {
 
+        Callback* const CallbackGuard = (Callback*)8;
 
         TINYASYNC_GUARD("IoContex::run(): ");
         int const maxevents = 5;
@@ -2053,24 +2054,19 @@ namespace tinyasync {
                         throw_errno("epoll_wait error");
                     }
                     
-                    // give compiler a hint
-                    if(maxevents == 1) {
-                        nfds = 1;
-                    }
-
                     // let's have a overview of event
                     size_t effective_event = 0;
                     size_t wakeup_event = 0;
                     for(auto i = 0; i < nfds; ++i) {
                         auto& evt = events[i];
                         auto callback = (Callback*)evt.data.ptr;
-                        if(callback == (void*)1) {
+                        if(callback < CallbackGuard) {
                             wakeup_event = 1;
                             ++i;
                             for(;i < nfds; ++i) {
                                 auto& evt = events[i];
                                 auto callback = (Callback*)evt.data.ptr;
-                                if(callback == (void*)1) {
+                                if(callback < CallbackGuard) {
                                     //
                                 } else {
                                     effective_event = 1;
@@ -2084,10 +2080,10 @@ namespace tinyasync {
                             for(;i < nfds; ++i) {
                                 auto& evt = events[i];
                                 auto callback = (Callback*)evt.data.ptr;
-                                if(callback == (void*)1) {
+                                if(callback < CallbackGuard) {
                                     wakeup_event = 1;
+                                    break;
                                 }
-                                break;
                             }
                             break;
                         }
@@ -2111,9 +2107,9 @@ namespace tinyasync {
                     TINYASYNC_LOG("event %d of %d", i, nfds);
                     TINYASYNC_LOG("event = %x (%s)", evt.events, ioe2str(evt).c_str());
                     auto callback = (Callback*)evt.data.ptr;
-                    if(callback > (void*)8) {
+                    if(callback >= CallbackGuard) {
                         try {
-                                callback->callback(evt);
+                            callback->callback(evt);
                         } catch (...) {
                             terminate_with_unhandled_exception();
                         }
