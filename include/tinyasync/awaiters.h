@@ -451,6 +451,7 @@ namespace tinyasync {
         {
             auto m_conn = this;
             epoll_event evt;
+            evt.events = 0;
             if(m_conn->m_recv_awaiter) {
                 evt.events |= EPOLLIN;
             }
@@ -616,6 +617,7 @@ namespace tinyasync {
             }
         } else {
             TINYASYNC_LOG("not processed event for conn_handle %x", errno, m_conn->m_conn_handle);
+            fprintf(stderr, "%s\n", ioe2str(evt).c_str());
             exit(1);
         }
 #endif
