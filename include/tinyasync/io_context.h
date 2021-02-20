@@ -139,15 +139,20 @@ namespace tinyasync
 
         void run()
         {
-            m_ctx->run();
+            auto *ctx = m_ctx.get();
+            ctx->run();
         }
+
         void post_task(PostTask *task)
         {
-            m_ctx->post_task(task);
+            auto *ctx = m_ctx.get();
+            ctx->post_task(task);
         }
+        
         void request_abort()
         {
-            m_ctx->request_abort();
+            auto *ctx = m_ctx.get();
+            ctx->request_abort();
         }
 
         NativeHandle event_poll_handle()

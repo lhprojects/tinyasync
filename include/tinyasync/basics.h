@@ -659,6 +659,11 @@ namespace tinyasync {
             return n;
         }
 
+        void clear() {
+            m_before_head.m_next = nullptr;
+            m_tail = nullptr;
+        }
+
         // consume a dangling ndoe
         void push(ListNode *node)
         {

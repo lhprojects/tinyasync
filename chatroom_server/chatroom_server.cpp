@@ -1,6 +1,4 @@
-#define TINYASYNC_TRACE
-
-//#define TINYASYNC_THROW_ON_OPEN
+//#define TINYASYNC_TRACE
 
 #include <tinyasync/tinyasync.h>
 #include <string_view>
@@ -158,7 +156,9 @@ Task<> Part::listen() {
     {
         char sb[1000];
 
+        printf("read...\n");
         auto nread = co_await client->m_conn.async_read(sb, sizeof(sb));
+        printf("read\n");
 
         if (nread == 0)
         {
@@ -188,7 +188,9 @@ Task<> Part::send() {
     {
         co_await m_msg_mtx.lock();
         for(;!m_messages.size();) {                
+            printf("waiting..\n");
             co_await m_msg_condv.wait(m_msg_mtx);
+            printf("!");
         }
         std::string msg = std::move(m_messages.back());
         m_messages.pop();
@@ -220,6 +222,7 @@ Task<> Part::start() {
 int main()
 {
 
+    Connection conn;
 	try {
         ChatRoomServer server;
 		server.start();

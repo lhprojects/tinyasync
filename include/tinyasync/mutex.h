@@ -532,29 +532,94 @@ namespace tinyasync
         return {awaiter, mtx};
     }
 
+    class Event;
+    class EventAwaiter;
 
+    template<class Trait>
+    class Condv;
 
-    class ConditionVariableAwaiter
+    template<class Condv>
+    class CondvAwaiter;
+
+    struct PostTaskEvent : PostTask
     {
-        friend class ConditionVariableCallback;
-        friend class ConditionVariable;
+        ListNode *m_awaiters;
+    };
 
-        ConditionVariableAwaiter *m_next = nullptr;
-        ConditionVariable *m_condv = nullptr;
-        Mutex *m_mtx = nullptr;
-        MutexLockAwaiter m_mutex_lock_awaiter;
+    class Event
+    {
+    public:
+        Queue m_awaiter_que;
+        IoContext *m_ctx = nullptr;
+
+        Event(IoContext &ctx)
+        {
+            m_ctx = &ctx;
+        }
+
+        EventAwaiter operator co_await();        
+
+
+        static void on_notify(PostTask *postask);
+
+        void notify_one()
+        {
+            TINYASYNC_GUARD("Event::notify_one(): ");
+            TINYASYNC_LOG("");
+    
+
+            auto posttask = new PostTaskEvent();
+
+            bool empty__ = false;
+            auto awaiter = this->m_awaiter_que.pop(empty__);
+
+            awaiter->m_next = nullptr;
+            posttask->m_awaiters = awaiter;
+            posttask->m_callback = on_notify;
+            m_ctx->post_task(posttask);
+            
+        }
+
+        void notify_all()
+        {
+            TINYASYNC_GUARD("Event::notify_all(): ");
+            TINYASYNC_LOG("");
+
+            auto posttask = new PostTaskEvent();
+
+            posttask->m_awaiters = this->m_awaiter_que.m_before_head.m_next;
+
+            this->m_awaiter_que.m_before_head.m_next = nullptr;
+            this->m_awaiter_que.m_tail = nullptr;
+
+            posttask->m_callback = on_notify;
+            m_ctx->post_task(posttask);
+            
+
+        }
+
+    private:
+    };
+
+    class EventAwaiter
+    {
+        friend class Event;
+        ListNode m_node;
+        Event *m_event = nullptr;
         std::coroutine_handle<TaskPromiseBase> m_resume_coroutine = nullptr;
 
     public:
 
-        ConditionVariableAwaiter(ConditionVariable &condv, Mutex &mtx)
-            : m_mutex_lock_awaiter(mtx)
-        {
-            m_condv = &condv;
-            m_mtx = &mtx;
+        static EventAwaiter *from_node(ListNode *node) {
+            return (EventAwaiter*)((char*)node - offsetof(EventAwaiter,m_node));
         }
 
-        bool await_ready() const
+        EventAwaiter(Event &evt)
+        {
+            m_event = &evt;
+        }
+
+        bool await_ready()
         {
             return false;
         }
@@ -562,8 +627,7 @@ namespace tinyasync
         template <class Promise>
         void await_suspend(std::coroutine_handle<Promise> h)
         {
-            auto suspend_coroutine = h.promise().coroutine_handle_base();
-            await_suspend(suspend_coroutine);
+            await_suspend(h.promise().coroutine_handle_base());
         }
 
         void await_suspend(std::coroutine_handle<TaskPromiseBase> h);
@@ -571,144 +635,33 @@ namespace tinyasync
         void await_resume();
     };
 
-    void EventAwaiter::await_suspend(std::coroutine_handle<TaskPromiseBase> h)
+    inline void Event::on_notify(PostTask *postask)
     {
-        TINYASYNC_GUARD("ConditionVariableAwaiter::await_suspend(): ");
+        ListNode *node = ((PostTaskEvent*)postask)->m_awaiters;
+        delete postask;
 
-
-        auto *event = m_event;
-        if(!event->m_event_handle) {
-        
-            int flags = EFD_NONBLOCK;
-            NativeHandle fd = ::eventfd(1, flags);
-            event->m_event_handle = fd;
-            if (fd < 0)
-                throw_errno("can't create event");
-
-            TINYASYNC_LOG("create eventfd = %d", fd);
-            epoll_event evt;
-            evt.data.ptr = event->m_callback;
-            // level triger
-            evt.events = EPOLLONESHOT; // on counter > 0
-            if (epoll_ctl(event->m_ctx->event_poll_handle(), EPOLL_CTL_ADD, fd, &evt) < 0)
-            {
-                throw_errno(format("can't put event to poll, event = %s", handle_c_str(fd)));
-            }
-            event->m_added_in_epoll = true;
+        for(;node; node = node->m_next) {
+            EventAwaiter *awaiter = EventAwaiter::from_node(node);
+            TINYASYNC_RESUME(awaiter->m_resume_coroutine);
         }
+    }
 
-        TINYASYNC_LOG("await fd = %d", event->m_event_handle);
+    inline void EventAwaiter::await_suspend(std::coroutine_handle<TaskPromiseBase> h)
+    {
+        TINYASYNC_GUARD("EventAwaiter::await_suspend(): ");
+        TINYASYNC_LOG("");
+
         auto evt = m_event;
 
         // insert into the head of awaiter list
-        auto head = evt->m_awaiter;
-        this->m_next = head;
-        evt->m_awaiter = this;
-
+        evt->m_awaiter_que.push(&this->m_node);
         m_resume_coroutine = h;
     }
 
-    void ConditionVariableAwaiter::await_suspend(std::coroutine_handle<TaskPromiseBase> h)
+    inline void EventAwaiter::await_resume()
     {
-        TINYASYNC_ASSERT(m_mtx->is_locked());
-        TINYASYNC_GUARD("ConditionVariableAwaiter::await_suspend(): ");
-
-        auto *event = m_condv;
-        if(!event->m_event_handle) {
-        
-            int flags = EFD_NONBLOCK;
-            NativeHandle fd = ::eventfd(1, flags);
-            event->m_event_handle = fd;
-            if (fd < 0)
-                throw_errno("ConditionVariableAwaiter::await_suspend: can't create event");
-
-            TINYASYNC_LOG("create eventfd = %d", fd);
-            epoll_event evt;
-            evt.data.ptr = event->m_callback;
-            // level triger
-            evt.events = EPOLLONESHOT; // on counter > 0
-            if (epoll_ctl(event->m_ctx->event_poll_handle(), EPOLL_CTL_ADD, fd, &evt) < 0)
-            {
-                throw_errno(format("ConditionVariableAwaiter::await_suspend: can't put event to poll, event = %s", handle_c_str(fd)));
-            }
-            event->m_added_in_epoll = true;
-        }
-
-        TINYASYNC_LOG("await fd = %d", event->m_event_handle.load(std::memory_order_relaxed));
-        auto evt = m_condv;
-
-        // insert into the head of awaiter list
-        auto head = evt->m_awaiter.load(std::memory_order_relaxed);
-        this->m_next = head;
-        evt->m_awaiter.store(this, std::memory_order_relaxed);
-
-        m_resume_coroutine = h;
-
-        m_mtx->unlock();
-    }
-
-    void EventAwaiter::await_resume() {
         TINYASYNC_GUARD("EventAwaiter::await_resume(): ");
-        TINYASYNC_LOG("fd = %d", m_event->m_event_handle);
-    }
-
-    void ConditionVariableAwaiter::await_resume() {
-        TINYASYNC_GUARD("ConditionVariableAwaiter::await_resume(): ");
-        TINYASYNC_LOG("fd = %d", m_condv->m_event_handle.load());
-        TINYASYNC_ASSERT(m_mtx->is_locked());
-    }
-
-    void ConditionVariableCallback::on_callback(IoEvent &)
-    {
-        auto condv = (ConditionVariable*)((char*)this - offsetof(ConditionVariable, m_callback));
-
-        TINYASYNC_GUARD("ConditionVariableCallback::on_callback(): ");
-        TINYASYNC_LOG("fd = %d", condv->m_event_handle.load());
-        TINYASYNC_ASSERT(condv->m_event_handle.load());
-
-        // remove all awaiters
-        auto awaiter = condv->m_awaiter.exchange(nullptr, std::memory_order_relaxed);
-
-
-        for (; awaiter;)
-        {
-            auto next = awaiter->m_next;
-            awaiter->m_next = nullptr;
-
-            auto coro = awaiter->m_resume_coroutine;
-
-            awaiter->m_mutex_lock_awaiter = awaiter->m_mtx->lock();
-            bool own = !awaiter->m_mutex_lock_awaiter.await_suspend(coro);
-            if(own) {
-                awaiter->m_mutex_lock_awaiter.await_resume();
-                TINYASYNC_RESUME(coro);
-            }
-
-            awaiter = next;
-        }        
-    }
-
-    void EventCallback::on_callback(IoEvent &)
-    {
-        auto evt = m_event;
-
-        TINYASYNC_GUARD("EventCallback::on_callback(): ");
-        TINYASYNC_LOG("fd = %d", evt->m_event_handle);
-        assert(evt->m_event_handle);
-
-        // remove all awaiters
-        auto awaiter = std::exchange(evt->m_awaiter, nullptr);
-
-        for (; awaiter;)
-        {
-            auto next = awaiter->m_next;
-            awaiter->m_next = nullptr;
-
-            auto coro = awaiter->m_resume_coroutine;
-            TINYASYNC_RESUME(coro);
-
-            awaiter = next;
-        }        
+        TINYASYNC_LOG("");
     }
 
     inline EventAwaiter Event::operator co_await()
@@ -716,10 +669,158 @@ namespace tinyasync
         return {*this};
     }
 
-    ConditionVariableAwaiter ConditionVariable::wait(Mutex &mtx)
+
+
+   template<class Trait = MultiThreadTrait>
+   class Condv
+{
+    public:
+        using mutex_type = Trait::spinlock_type;
+        Queue m_awaiter_que;
+        mutex_type m_native_mutex;
+        IoContext *m_ctx = nullptr;
+
+        Condv(IoContext &ctx)
+        {
+            m_ctx = &ctx;
+        }
+
+
+        CondvAwaiter<Condv> wait(Mutex &mtx);
+
+
+        static void on_notify(PostTask *postask);
+
+        void notify_one()
+        {
+            TINYASYNC_GUARD("Event::notify_one(): ");
+            TINYASYNC_LOG("");
+    
+
+            auto posttask = new PostTaskEvent();
+
+            m_native_mutex.lock();
+            bool empty__ = false;            
+            auto awaiter = this->m_awaiter_que.pop(empty__);
+            m_native_mutex.unlock();
+
+            awaiter->m_next = nullptr;
+            posttask->m_awaiters = awaiter;
+            posttask->m_callback = on_notify;
+            m_ctx->post_task(posttask);
+            
+
+        }
+
+        void notify_all()
+        {
+            TINYASYNC_GUARD("Event::notify_all(): ");
+            TINYASYNC_LOG("");
+
+            auto posttask = new PostTaskEvent();
+
+            m_native_mutex.lock();
+            posttask->m_awaiters = this->m_awaiter_que.m_before_head.m_next;
+            this->m_awaiter_que.m_before_head.m_next = nullptr;
+            this->m_awaiter_que.m_tail = nullptr;
+            m_native_mutex.unlock();
+
+            posttask->m_callback = on_notify;
+            m_ctx->post_task(posttask);
+            
+
+        }
+
+    };
+
+    using ConditionVariable = Condv<>;
+
+    template<class Condv>
+    class CondvAwaiter
+    {
+    public:
+        ListNode m_node;
+        Condv *m_condv = nullptr;
+        Mutex *m_mtx;
+        MutexLockAwaiter m_mutex_lock_awaiter;
+        std::coroutine_handle<TaskPromiseBase> m_resume_coroutine = nullptr;
+
+
+        static CondvAwaiter *from_node(ListNode *node) {
+            return (CondvAwaiter*)((char*)node - offsetof(CondvAwaiter<Condv>,m_node));
+        }
+
+        CondvAwaiter(Condv &evt, Mutex &mtx) : m_mutex_lock_awaiter(mtx)
+        {
+            m_condv = &evt;
+            m_mtx = &mtx;
+        }
+
+        bool await_ready()
+        {
+            return false;
+        }
+
+        template <class Promise>
+        void await_suspend(std::coroutine_handle<Promise> suspend_coroutine)
+        {
+            auto h = suspend_coroutine.promise().coroutine_handle_base();
+            await_suspend(h);
+        }
+
+        void await_suspend(std::coroutine_handle<TaskPromiseBase> h);
+
+        void await_resume();
+    };
+
+    template<class Trait>
+    inline void Condv<Trait>::on_notify(PostTask *postask)
+    {
+        using Condv = CondvAwaiter<Trait>;
+        ListNode *node = ((PostTaskEvent*)postask)->m_awaiters;
+        delete postask;
+
+        for(;node; node = node->m_next) {
+            CondvAwaiter<Condv> *awaiter = CondvAwaiter<Condv>::from_node(node);
+            if(!awaiter->m_mutex_lock_awaiter.await_suspend(awaiter->m_resume_coroutine)) {
+                TINYASYNC_RESUME(awaiter->m_resume_coroutine);
+            }
+        }
+    }
+
+    template<class Trait>
+    CondvAwaiter<Condv<Trait> > Condv<Trait>::wait(Mutex &mtx)
     {
         return {*this, mtx};
     }
+
+    template<class Condv>
+    inline void CondvAwaiter<Condv>::await_suspend(std::coroutine_handle<TaskPromiseBase> h)
+    {
+        TINYASYNC_GUARD("EventAwaiter::await_suspend(): ");
+        TINYASYNC_LOG("");
+
+        m_resume_coroutine = h;
+
+        auto evt = m_condv;
+        // insert into the head of awaiter list
+        evt->m_native_mutex.lock();
+        evt->m_awaiter_que.push(&this->m_node);
+        evt->m_native_mutex.unlock();
+        
+        Mutex *mtx = this->m_mtx;
+        TINYASYNC_ASSERT(mtx->is_locked());
+        mtx->unlock();
+    }
+
+    template<class Condv>
+    inline void CondvAwaiter<Condv>::await_resume()
+    {
+        TINYASYNC_GUARD("EventAwaiter::await_resume(): ");
+        TINYASYNC_LOG("");
+    }
+
+
 
 } // namespace tinyasync
 
