@@ -634,41 +634,6 @@ namespace tinyasync {
 #endif
 
 
-#if defined(_WIN32)
-    struct IoEvent {
-        DWORD transfered_bytes;
-        union {
-            void* user_data_per_handle;
-            ULONG_PTR key;
-        };
-    };
-#elif defined(__unix__)
-
-    struct IoEvent : epoll_event
-    {
-    };
-
-    std::string ioe2str(epoll_event& evt)
-    {
-        std::string str;
-        str += ((evt.events & EPOLLIN) ? "EPOLLIN " : "");;
-        str += ((evt.events & EPOLLPRI) ? "EPOLLPRI " : "");
-        str += ((evt.events & EPOLLOUT) ? "EPOLLOUT " : "");
-        str += ((evt.events & EPOLLRDNORM) ? "EPOLLRDNORM " : "");
-        str += ((evt.events & EPOLLRDBAND) ? "EPOLLRDBAND " : "");
-        str += ((evt.events & EPOLLWRBAND) ? "EPOLLWRBAND " : "");
-        str += ((evt.events & EPOLLMSG) ? "EPOLLMSG " : "");
-        str += ((evt.events & EPOLLERR) ? "EPOLLERR " : "");
-        str += ((evt.events & EPOLLHUP) ? "EPOLLHUP " : "");
-        str += ((evt.events & EPOLLRDHUP) ? "EPOLLRDHUP " : "");
-        str += ((evt.events & EPOLLEXCLUSIVE) ? "EPOLLEXCLUSIVE " : "");
-        str += ((evt.events & EPOLLWAKEUP) ? "EPOLLWAKEUP " : "");
-        str += ((evt.events & EPOLLONESHOT) ? "EPOLLONESHOT " : "");
-        str += ((evt.events & EPOLLET) ? "EPOLLET " : "");
-        return str;
-    }
-#endif
-
     class ListNode
     {
     public:

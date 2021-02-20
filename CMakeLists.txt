@@ -16,6 +16,7 @@ include_directories(./include)
 set(HEADER_FILES 
     ${CMAKE_CURRENT_SOURCE_DIR}/include/tinyasync/basics.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/tinyasync/task.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/tinyasync/io_context.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/tinyasync/awaiters.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/tinyasync/mutex.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/tinyasync/tinyasync.h
