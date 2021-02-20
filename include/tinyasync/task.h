@@ -444,6 +444,7 @@ namespace tinyasync {
 
 #define TINYASYNC_RESUME(coroutine)  resume_coroutine(coroutine, TINYASYNC_FUNCNAME)
 
+
     // you can't get result of task here
     // so use Task<void>
     inline void co_spawn(Task<void> task)

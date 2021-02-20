@@ -1,19 +1,13 @@
-﻿#define TINYASYNC_TRACE
+﻿//#define TINYASYNC_TRACE
 #include <tinyasync/tinyasync.h>
 
 using namespace tinyasync;
 
-Task<> echo_once(Connection &conn, bool &run, Name = "echo_once") {
-	char buf[1000];
-	std::size_t nread = co_await conn.async_read(buf, 1000);
-	if(nread == 0) {
-		printf("peer shutdown\n");
-		run = false;
-		co_return;		
-	}
+Task<> send_all(Connection &conn, bool &run, void *buf, size_t bytes)
+{
 
-	char *send_buf = buf;
-	std::size_t remain = nread;
+	char const *send_buf = (char const *)buf;
+	std::size_t remain = bytes;
 
 	// repeat send until all are sent
 	for(;;) {
@@ -22,7 +16,6 @@ Task<> echo_once(Connection &conn, bool &run, Name = "echo_once") {
 		remain -= nsent;
 
 		if(nsent == 0) {
-			printf("peer shutdown\n");
 			run = false;
 			break;
 		} else if(remain == 0) {
@@ -31,19 +24,24 @@ Task<> echo_once(Connection &conn, bool &run, Name = "echo_once") {
 	}
 }
 
-Task<> handle_connection(IoContext& ctx, Connection conn, Name="handle_connection") {
+Task<> handle_connection(IoContext& ctx, Connection conn, Name="handle_connection")
+{
 	bool run = true;
 	for(;run;) {
-		// suspend initially
-		auto task = echo_once(conn, run);
-		// run until blocking by io
-		// after task is fully done, then return
-		co_await task;
+
+		char buf[1000];
+		std::size_t nread = co_await conn.async_read(buf, 1000);
+		if(nread == 0) {
+			run = false;
+			co_return;		
+		}
+		co_spawn(send_all(conn, run, buf, nread));
 	}
 }
 
 
-Task<> listen(IoContext &ctx, Name="listen") {
+Task<> listen(IoContext &ctx, Name="listen")
+{
 
 	Acceptor acceptor(ctx, Protocol::ip_v4(), Endpoint(Address::Any(), 8899));
 
@@ -63,10 +61,11 @@ void server() {
 	TINYASYNC_GUARD("server():");
 
 	IoContext ctx;
-	// run until blocking by io then return immediately,
-	// so that we can goto event loop in ctx.run()
+
+	// run until blocking by io, then return immediately,
+	// so that we can goto event loop in ctx.run(),
 	// where we will resume the coroutine when io is ready
-	// note `listen` returns Task
+
 	co_spawn(listen(ctx));
 
 	TINYASYNC_LOG("run");

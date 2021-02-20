@@ -248,18 +248,6 @@ namespace tinyasync
 
     class Mutex;
     class MutexLockAwaiter;
-
-    class MutexTaskCallback : public CallbackImplBase
-    {
-        friend class MutexLockAwaiter;
-
-    public:
-        MutexTaskCallback(MutexLockAwaiter &) : CallbackImplBase(this) {
-        }
-        void on_callback(IoEvent &);
-    };
-    static constexpr std::size_t MutexTaskCallback_size = sizeof(MutexTaskCallback);
-    static_assert(sizeof(MutexTaskCallback) == sizeof(void*));
  
     class MutexLockAwaiter
     {
@@ -267,8 +255,7 @@ namespace tinyasync
         ListNode m_node;
         Mutex *m_mutex;
         std::coroutine_handle<TaskPromiseBase> m_suspended_coroutine = nullptr;
-        MutexTaskCallback m_callback {*this};
-        PostTask m_task;
+        PostTask m_posttask;
 
         static MutexLockAwaiter *from_node(ListNode *node)
         {
@@ -277,6 +264,8 @@ namespace tinyasync
             return (MutexLockAwaiter *)((char *)node - offsetof(MutexLockAwaiter, m_node));
 #pragma GCC diagnostic pop
         }
+
+        static void on_callback(PostTask *);
 
         template<class Promise>
         auto await_suspend(std::coroutine_handle<Promise> suspended_coroutine)
@@ -344,10 +333,10 @@ namespace tinyasync
         return !own_mutex;
     }
 
-    void MutexTaskCallback::on_callback(IoEvent &)
+    inline void MutexLockAwaiter::on_callback(PostTask *posttask)
     {
         TINYASYNC_GUARD("MutexTaskCallback::on_callback");
-        auto awaiter = (MutexLockAwaiter*)((char*)this - offsetof(MutexLockAwaiter, m_callback));
+        auto awaiter = (MutexLockAwaiter*)((char*)posttask - offsetof(MutexLockAwaiter, m_posttask));
         TINYASYNC_ASSERT(awaiter->m_mutex->is_locked());
 
         TINYASYNC_LOG("resume `%s`", c_name(awaiter->m_suspended_coroutine));
@@ -372,9 +361,11 @@ namespace tinyasync
         if (node)
         {
             // still locked
-            MutexLockAwaiter *awaiter = MutexLockAwaiter::from_node(node);
-            awaiter->m_task.m_callback = &awaiter->m_callback;
-            m_ctx->post_task(&awaiter->m_task);
+            // pop from mutex list
+            MutexLockAwaiter *awaiter = MutexLockAwaiter::from_node(node);            
+            // insert into ctx's task list
+            awaiter->m_posttask.m_callback = MutexLockAwaiter::on_callback;
+            m_ctx->post_task(&awaiter->m_posttask);
         }
         else
         {

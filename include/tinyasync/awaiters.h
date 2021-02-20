@@ -62,14 +62,15 @@ namespace tinyasync {
     static constexpr std::size_t CallbackImplBase_size = sizeof(CallbackImplBase);
     static_assert(std::is_standard_layout_v<CallbackImplBase>);
 
+
+
     struct PostTask
     {
         // use internally
         ListNode m_node;
         // your callback
-        Callback *m_callback;
-        // argument to callback
-        IoEvent m_io_event;
+        using callback_type = void(*)(PostTask *);
+        callback_type m_callback;
 
         static PostTask *from_node(ListNode *node) {
             return (PostTask *)((char*)node - offsetof(PostTask, m_node));
@@ -2003,9 +2004,9 @@ namespace tinyasync {
                     m_que_lock.unlock();
                 }
 
-                auto *task = PostTask::from_node(node);
+                PostTask *task = PostTask::from_node(node);
                 try {
-                    task->m_callback->callback(task->m_io_event);
+                    (task->m_callback)(task);
                 } catch(...) {
                     terminate_with_unhandled_exception();
                 }
