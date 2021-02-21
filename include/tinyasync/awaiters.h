@@ -400,30 +400,16 @@ namespace tinyasync {
 
             auto awaiter = m_conn->m_recv_awaiter;
             int nbytes = recv(m_conn->m_conn_handle, awaiter->m_buffer_addr, (int)awaiter->m_buffer_size, 0);
+            TINYASYNC_LOG("recv %d bytes", nbytes);
 
-            if (nbytes < 0) {
-
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    TINYASYNC_LOG("EAGAIN, fd = %d", m_conn->m_conn_handle);
-                } else {
-                    TINYASYNC_LOG("ERROR = %d, fd = %d", errno, m_conn->m_conn_handle);
-                    throw_errno("recv error");
-                }
+            if(nbytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { 
+                // try again latter ...
             } else {
-                if (nbytes == 0) {
-                    if (errno == ESHUTDOWN) {
-                        TINYASYNC_LOG("ESHUTDOWN, fd = %d", m_conn->m_conn_handle);
-                    }
-                }
-                TINYASYNC_LOG("fd = %d, %d bytes read", m_conn->m_conn_handle, nbytes);
-                awaiter->m_bytes_transfer = nbytes;
-
                 // may cause Connection self deleted
                 // so we should not want to read and send at the same
+                awaiter->m_bytes_transfer = (std::ptrdiff_t)nbytes;
                 TINYASYNC_RESUME(awaiter->m_suspend_coroutine);
-
             }
-
         } else if ((evt.events & EPOLLOUT) && m_conn->m_send_awaiter) {
             // we want to send and it's ready to read
 
@@ -432,25 +418,12 @@ namespace tinyasync {
             int nbytes = ::send(m_conn->m_conn_handle, awaiter->m_buffer_addr, (int)awaiter->m_buffer_size, 0);
             TINYASYNC_LOG("sent %d bytes", nbytes);
 
-            if (nbytes < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    TINYASYNC_LOG("EAGAIN, fd = %d", m_conn->m_conn_handle);
-                } else {
-                    TINYASYNC_LOG("ERROR = %d, fd = %d", errno, m_conn->m_conn_handle);
-                    throw_errno("send error");
-                }
+            if(nbytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { 
+                // try again latter ...
             } else {
-                if (nbytes == 0) {
-                    if (errno == ESHUTDOWN) {
-                        TINYASYNC_LOG("ESHUTDOWN, fd = %d", m_conn->m_conn_handle);
-                    }
-                }
-
-                TINYASYNC_LOG("fd = %d, %d bytes sent", m_conn->m_conn_handle, nbytes);
-                awaiter->m_bytes_transfer = nbytes;
-
                 // may cause Connection self deleted
                 // so we should not want to read and send at the same
+                awaiter->m_bytes_transfer = (std::ptrdiff_t)nbytes;
                 TINYASYNC_RESUME(awaiter->m_suspend_coroutine);
             }
         } else {
@@ -531,6 +504,19 @@ namespace tinyasync {
     {
         TINYASYNC_GUARD("AsyncReceiveAwaiter.await_resume(): ");
 
+        auto nbytes = (std::ptrdiff_t)m_bytes_transfer;
+        if (nbytes < 0) {
+            TINYASYNC_LOG("ERROR = %d, fd = %d", errno, m_conn->m_conn_handle);
+            throw_errno("AsyncReceiveAwaiter::await_resume(): recv error");
+        } else {
+            if (nbytes == 0) {
+                if (errno == ESHUTDOWN) {
+                    TINYASYNC_LOG("ESHUTDOWN, fd = %d", m_conn->m_conn_handle);
+                }
+            }
+            TINYASYNC_LOG("fd = %d, %d bytes read", m_conn->m_conn_handle, nbytes);
+        }
+
         // pop from front of list
         m_conn->m_recv_awaiter = m_conn->m_recv_awaiter->m_next;
         TINYASYNC_LOG("set recv_awaiter of conn(%p) to %p", m_conn, m_conn->m_recv_awaiter);
@@ -596,6 +582,20 @@ namespace tinyasync {
     std::size_t AsyncSendAwaiter::await_resume()
     {
         TINYASYNC_GUARD("AsyncSendAwaiter.await_resume(): ");
+
+        auto nbytes = (std::ptrdiff_t)m_bytes_transfer;
+        if (nbytes < 0) {
+            TINYASYNC_LOG("ERROR = %d, fd = %d", errno, m_conn->m_conn_handle);
+            throw_errno("AsyncSendAwaiter::await_resume(): send error");
+        } else {
+            if (nbytes == 0) {
+                if (errno == ESHUTDOWN) {
+                    TINYASYNC_LOG("ESHUTDOWN, fd = %d", m_conn->m_conn_handle);
+                }
+            }
+            TINYASYNC_LOG("fd = %d, %d bytes read", m_conn->m_conn_handle, nbytes);
+        }
+
         // pop from front of list
         m_conn->m_send_awaiter = m_conn->m_send_awaiter->m_next;
         TINYASYNC_LOG("set recv_awaiter of conn(%p) to %p", m_conn, m_conn->m_send_awaiter);
