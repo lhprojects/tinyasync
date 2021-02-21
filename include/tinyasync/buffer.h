@@ -30,6 +30,14 @@ namespace tinyasync
 
         Buffer(ConstBuffer &b) = delete;
 
+        
+        template <class T, std::size_t n>
+        Buffer(T (&a)[n])
+        {
+            m_data = static_cast<std::byte *>(&a[0]);
+            m_size = sizeof(a);
+        }
+
         template <class C>
         Buffer(C &a)
         {
@@ -78,12 +86,18 @@ namespace tinyasync
         {
         }
 
-        ConstBuffer(BufferRef const &r);
 
         ConstBuffer(std::byte const *data, std::size_t size) : m_data(data), m_size(size)
         {
         }
 
+        template <class T, std::size_t n>
+        ConstBuffer(T const (&a)[n])
+        {
+            m_data = (std::byte const*)(&a[0]);
+            m_size = sizeof(a);
+        }
+        
         ConstBuffer(Buffer const &r) : m_data(r.m_data), m_size(r.m_size)
         {
         }
@@ -122,8 +136,16 @@ namespace tinyasync
     {
         
     public:
+        Pool() noexcept : m_block_size(0), m_block_per_chunk(0), m_head(nullptr)
+        {
+        }
+
         Pool(std::size_t block_size, std::size_t block_per_chunk) noexcept
         {
+            initialize(block_size, block_per_chunk);
+        }
+
+        void initialize(std::size_t block_size, std::size_t block_per_chunk) {
             m_block_size = std::max(sizeof(void *), block_size);
             m_block_per_chunk = block_per_chunk;
             m_head = nullptr;

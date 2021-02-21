@@ -1249,10 +1249,15 @@ namespace tinyasync {
 #ifdef _WIN32
         //
 #elif defined(__unix__)
-        //auto clterr = epoll_ctl(m_connector->m_ctx->handle(), EPOLL_CTL_DEL, connfd, NULL);
-        //if (clterr == -1) {
-        //    throw_errno(format("can't unregister conn_handle = %d", connfd));
-        //}
+        // epoll_event evt;
+        // evt.data.ptr = nullptr;
+        // evt.events = 0;
+        // we can't handle error?
+        // so we remove it from epoll
+        auto clterr = epoll_ctl(m_connector->m_ctx->event_poll_handle(), EPOLL_CTL_DEL, connfd, NULL);
+        if (clterr == -1) {
+            throw_errno(format("can't unregister conn_handle = %d", connfd));
+        }
 #endif
 
         TINYASYNC_LOG("unregister connect for conn_handle = %s", socket_c_str(connfd));
@@ -1299,7 +1304,7 @@ namespace tinyasync {
         auto connfd = m_connector->m_socket;
         this->unregister(connfd);
         // added in event poll, because of connect
-        return { *m_connector->m_ctx, m_connector->m_socket, true};
+        return { *m_connector->m_ctx, m_connector->m_socket, false};
     }
 
     class TimerAwaiter;

@@ -102,6 +102,7 @@ You need to include tinyasync as following:
 #include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/basics.h>
 #include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/task.h>
 #include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/io_context.h>
+#include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/buffer.h>
 #include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/awaiters.h>
 #include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/mutex.h>
 <your code>

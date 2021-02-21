@@ -31,7 +31,7 @@ add_subdirectory("http_client")
 add_subdirectory("http_helloworld_server")
 add_subdirectory("lockcore")
 add_subdirectory("mutex")
+add_subdirectory("pingpong")
 add_subdirectory("sleepsort")
 add_subdirectory("wait")
-
 
