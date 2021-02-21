@@ -121,6 +121,7 @@ namespace tinyasync
         virtual ~IoCtxBase() {}
 
         NativeHandle m_epoll_handle = NULL_HANDLE;
+        std::pmr::memory_resource *m_memory_resource;
         NativeHandle event_poll_handle()
         {
             return m_epoll_handle;
@@ -129,6 +130,7 @@ namespace tinyasync
 
     class IoContext
     {
+        std::pmr::memory_resource *m_memory_resource;
         NativeHandle m_epoll_handle = NULL_HANDLE;
         std::unique_ptr<IoCtxBase> m_ctx;
 
@@ -137,6 +139,10 @@ namespace tinyasync
         template <bool multiple_thread = false>
         IoContext(std::integral_constant<bool, multiple_thread> = std::false_type());
 
+
+        std::pmr::memory_resource *get_memory_resource_for_task() {
+            return m_memory_resource;
+        }
         void run()
         {
             auto *ctx = m_ctx.get();
@@ -167,12 +173,18 @@ namespace tinyasync
     {
         using spinlock_type = NaitveLock;
         static constexpr bool multiple_thread = false;
+        static std::pmr::memory_resource *get_memory_resource() {
+            return std::pmr::get_default_resource();
+        }
     };
 
     struct MultiThreadTrait
     {
         using spinlock_type = DefaultSpinLock;
         static constexpr bool multiple_thread = true;
+        static std::pmr::memory_resource *get_memory_resource() {
+            return std::pmr::get_default_resource();
+        }
     };
 
     template <class CtxTrait>
@@ -214,6 +226,7 @@ namespace tinyasync
             m_ctx = std::make_unique<IoCtx<SingleThreadTrait>>();
         }
         m_epoll_handle = m_ctx->m_epoll_handle;
+        m_memory_resource = m_ctx->m_memory_resource;
     }
 
     template <class T>
@@ -222,6 +235,7 @@ namespace tinyasync
 
         TINYASYNC_GUARD("IoContext.IoContext(): ");
 
+        m_memory_resource = T::get_memory_resource();
 #ifdef _WIN32
 
         WSADATA wsaData;

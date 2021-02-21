@@ -37,6 +37,10 @@ struct Session
 
 	}
 
+	std::pmr::memory_resource *get_memory_resource_for_task() {
+		return m_ctx->get_memory_resource_for_task();
+	}
+
 	IoContext *m_ctx;
 	Connection conn;
 	Event m_on_buffer_has_data { *m_ctx };
@@ -44,7 +48,7 @@ struct Session
 	Queue m_que;
 	bool m_run = true;
 
-	Task<> read()
+	Task<> read(IoContext &ctx)
 	{
 
 		for(;m_run;) {
@@ -65,7 +69,7 @@ struct Session
 
 	}
 
-	Task<> send()
+	Task<> send(IoContext &ctx)
 	{
 
 		for(;m_run;) {
@@ -100,10 +104,10 @@ struct Session
 	}
 };
 
-Task<> start(Session s)
+Task<> start(IoContext &ctx, Session s)
 {
-	co_spawn(s.read());
-	co_await s.send();
+	co_spawn(s.read(ctx));
+	co_await s.send(ctx);
 	for(;s.m_run;) {
 		co_await s.all_done;
 	}
@@ -112,12 +116,11 @@ Task<> start(Session s)
 
 Task<> listen(IoContext &ctx)
 {
-
 	Acceptor acceptor(ctx, Protocol::ip_v4(), Endpoint(Address::Any(), 8899));
 
 	for (;;) {
 		Connection conn = co_await acceptor.async_accept();
-		co_spawn(start(Session(ctx, std::move(conn))));
+		co_spawn(start(ctx, Session(ctx, std::move(conn))));
 	}
 
 }
@@ -126,10 +129,6 @@ void server() {
 	TINYASYNC_GUARD("server():");
 
 	IoContext ctx;
-
-	// run until blocking by io, then return immediately,
-	// so that we can goto event loop in ctx.run(),
-	// where we will resume the coroutine when io is ready
 
 	co_spawn(listen(ctx));
 

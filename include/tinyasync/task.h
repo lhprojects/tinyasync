@@ -10,19 +10,60 @@ namespace tinyasync {
     template<class Result>
     class Task;
 
+
     class TaskPromiseBase {
     public:
         ResumeResult* m_resume_result;
         std::exception_ptr m_unhandled_exception = nullptr;
         std::coroutine_handle<TaskPromiseBase> m_continuum = nullptr;
         bool m_dangling = false;
+        std::pmr::memory_resource *m_memory_resource;
 
-#ifdef TINYASYNC_TRACE
+
+        inline static void * do_alloc(std::size_t size, std::pmr::memory_resource *memory_resource)
+        {
+            // put allocator at the end of the frame
+            auto memory_resource_size =  sizeof(memory_resource);
+            auto memory_resource_align =  alignof(memory_resource);
+            auto memory_resource_offset = (size  + memory_resource_align - 1u) & ~(memory_resource_align - 1u);
+
+            auto ptr = memory_resource->allocate(memory_resource_offset + memory_resource_size);
+            new((char*)ptr + memory_resource_offset) decltype(memory_resource)(memory_resource);
+            return ptr;
+        }
+
+
+        template<class T>
+        static void *alloc_1(std::size_t size, T &&) {
+            auto memory_resource = std::pmr::get_default_resource();
+            auto ptr = do_alloc(size, memory_resource);
+            return ptr;
+        }
+
+        template<class T>
+        static auto alloc_1(std::size_t size, T &a) -> std::enable_if_t<
+            std::is_same_v<decltype(std::declval<std::remove_cvref_t<T> >().get_memory_resource_for_task()), std::pmr::memory_resource*>,
+            void*>
+        {
+            auto memory_resource = a.get_memory_resource_for_task();
+            auto ptr = do_alloc(size, memory_resource);
+            return ptr;
+        }
+
+        template<class T, class... Args>
+        static void* operator new(std::size_t size, T && a, Args &&... )
+        {
+            TINYASYNC_GUARD("Task.Promise.operator new(): ");
+            auto ptr = alloc_1(size, a);
+            TINYASYNC_LOG("%d bytes at %p", (int)(size), ptr);
+            return ptr;
+        }
+
         static void* operator new(std::size_t size)
         {
             TINYASYNC_GUARD("Task.Promise.operator new(): ");
-            auto ptr = ::operator new(size);
-            TINYASYNC_LOG("%d bytes at %p", (int)size, ptr);
+            auto ptr = alloc_1(size, 0);
+            TINYASYNC_LOG("%d bytes at %p", (int)(size), ptr);
             return ptr;
         }
 
@@ -30,9 +71,15 @@ namespace tinyasync {
         {
             TINYASYNC_GUARD("Task.Promise.operator delete(): ");
             TINYASYNC_LOG("%d bytes at %p", (int)size, ptr);
-            ::operator delete(ptr, size);
+
+            auto memory_resource_size =  sizeof(std::pmr::memory_resource*);
+            auto memory_resource_align =  alignof(std::pmr::memory_resource*);
+            auto memory_resource_offset = (size  + memory_resource_align - 1u) & ~(memory_resource_align - 1u);
+
+            auto memory_resource = *(std::pmr::memory_resource**)((char*)ptr + memory_resource_offset);
+            memory_resource->deallocate(ptr, size);
         }
-#endif
+
         bool is_dangling() const noexcept
         {
             return m_dangling;
