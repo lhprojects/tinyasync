@@ -649,6 +649,25 @@ namespace tinyasync {
         std::atomic<int> queue_size = 0;
 #endif
 
+        Queue() = default;
+        
+        Queue(Queue const &r) {
+            m_before_head = r.m_before_head;
+            m_tail = r.m_tail;
+#ifndef TINYASYNC_NDEBUG
+            queue_size.store(r.queue_size.load());
+#endif
+        }
+
+        Queue operator=(Queue const &r) {
+            m_before_head = r.m_before_head;
+            m_tail = r.m_tail;
+#ifndef TINYASYNC_NDEBUG
+            queue_size.store(r.queue_size.load());
+#endif
+            return *this;
+        }
+
         std::size_t count()
         {
             std::size_t n = 0;
@@ -704,9 +723,16 @@ namespace tinyasync {
                 --queue_size;
     #endif
     
-                is_empty = is_empty_;
             }
             return head;
+        }
+
+        // return a dangling node
+        // node->m_next is not meaningful
+        ListNode *pop()
+        {
+            bool empty__;
+            return this->pop(empty__);
         }
 
         // return a dangling node

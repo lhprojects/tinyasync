@@ -624,9 +624,19 @@ namespace tinyasync {
             return m_impl->async_read(buffer, bytes);
         }
 
+        AsyncReceiveAwaiter async_read(Buffer buffer)
+        {
+            return m_impl->async_read(buffer.data(), buffer.size());
+        }
+
         AsyncSendAwaiter async_send(void const* buffer, std::size_t bytes)
         {
             return m_impl->async_send(buffer, bytes);
+        }
+
+        AsyncSendAwaiter async_send(ConstBuffer buffer)
+        {
+            return m_impl->async_send(buffer.data(), buffer.size());
         }
 
         AsyncCloseAwaiter async_close() {

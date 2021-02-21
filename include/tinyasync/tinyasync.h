@@ -4,6 +4,7 @@
 #include "basics.h"
 #include "task.h"
 #include "io_context.h"
+#include "buffer.h"
 #include "awaiters.h"
 #include "mutex.h"
 

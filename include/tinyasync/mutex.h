@@ -572,8 +572,9 @@ namespace tinyasync
 
             bool empty__ = false;
             auto awaiter = this->m_awaiter_que.pop(empty__);
+            if(awaiter)
+                awaiter->m_next = nullptr;
 
-            awaiter->m_next = nullptr;
             posttask->m_awaiters = awaiter;
             posttask->m_callback = on_notify;
             m_ctx->post_task(posttask);
