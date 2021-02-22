@@ -195,18 +195,40 @@ namespace tinyasync {
         Buffer m_buffer_addr;
         std::size_t m_buffer_size;
         std::size_t m_bytes_transfer;
+        PostTask m_post_task;
+        
 #ifdef _WIN32
         WSABUF win32_single_buffer;
 #endif
+        static void wakeup_awaiter_on_close(PostTask *posttask)
+        {
+            using this_type = DataAwaiterMixin<Awaiter,Buffer>;
+            auto *awaiter = (this_type*)((char*)posttask - offsetof(this_type, m_post_task));
+            awaiter->m_bytes_transfer = (std::uintptr_t)(-1);
+            errno = ENOTSOCK;
+            TINYASYNC_RESUME(awaiter->m_suspend_coroutine);
+        }
+
+        void post_wakeup_awaiter_on_close()
+        {
+            this->m_post_task.m_callback = wakeup_awaiter_on_close;
+            m_ctx->post_task(&this->m_post_task);
+        }
+
+        static constexpr std::ptrdiff_t k_closed_socket_ready = -2;
+        
+
     };
 
 
-    class AsyncReceiveAwaiter : public std::suspend_always,
+    class AsyncReceiveAwaiter :
         public DataAwaiterMixin<AsyncReceiveAwaiter, void*>
     {
     public:
         friend class ConnImpl;
         AsyncReceiveAwaiter(ConnImpl& conn, void* b, std::size_t n);
+
+        bool await_ready();
 
         template<class Promise>
         inline void await_suspend(std::coroutine_handle<Promise> suspend_coroutine) {
@@ -225,6 +247,8 @@ namespace tinyasync {
         friend class ConnImpl;
         AsyncSendAwaiter(ConnImpl& conn, void const* b, std::size_t n);
 
+        bool await_ready();
+
         template<class Promise>
         inline void await_suspend(std::coroutine_handle<Promise> suspend_coroutine) {
             std::coroutine_handle<TaskPromiseBase> h = suspend_coroutine.promise().coroutine_handle_base();
@@ -233,6 +257,8 @@ namespace tinyasync {
 
         bool await_suspend(std::coroutine_handle<TaskPromiseBase> h);
         std::size_t await_resume();
+
+
     };
 
     class AsyncCloseAwaiter {
@@ -269,6 +295,7 @@ namespace tinyasync {
 
     class ConnImpl
     {
+        friend class Connection;
         friend class AsyncReceiveAwaiter;
         friend class AsyncSendAwaiter;
         friend class AsyncCloseAwaiter;
@@ -284,6 +311,10 @@ namespace tinyasync {
 
     public:
 
+
+        NativeSocket native_handle() {
+            return m_conn_handle;
+        }
 
         void register_()
         {
@@ -325,7 +356,9 @@ namespace tinyasync {
         {
             if (m_conn_handle) {
                 // ubind from epool ...
-                close_socket(m_conn_handle);
+                if(close_socket(m_conn_handle) < 0) {
+                    throw_errno(format("can't close socket fd  = %s", socket_c_str(m_conn_handle)));
+                }
                 m_conn_handle = NULL_SOCKET;
             }
         }
@@ -346,11 +379,6 @@ namespace tinyasync {
         ConnImpl(ConnImpl const&) = delete;
         ConnImpl& operator=(ConnImpl const&) = delete;
 
-        ~ConnImpl() noexcept
-        {
-            this->reset();
-        }
-
         AsyncReceiveAwaiter async_read(void* buffer, std::size_t bytes)
         {
             return { *this, buffer, bytes };
@@ -361,6 +389,45 @@ namespace tinyasync {
             TINYASYNC_GUARD("Connection.send(): ");
             TINYASYNC_LOG("try to send %d bytes", bytes);
             return { *this, buffer, bytes };
+        }
+
+
+        void close()
+        {
+            TINYASYNC_GUARD("Connection:close(): ");
+            auto conn_handle = m_conn_handle;
+            if(conn_handle != NULL_SOCKET)
+            {
+                if(close_socket(conn_handle) < 0) {
+                    TINYASYNC_LOG("close error");
+                    throw_errno("close error");
+                }
+                m_conn_handle = NULL_SOCKET;
+                m_added_to_event_pool = false;
+
+                auto conn = this;
+                // wakeup all awaiters
+                // post tasks at the end of queue
+                // after all awaiter wake up
+                // we should never recv event from e.g. epoll 
+                for(auto awaiter = conn->m_recv_awaiter; awaiter; awaiter = awaiter->m_next)
+                {           
+                    awaiter->post_wakeup_awaiter_on_close();
+                }
+
+                for(auto awaiter = conn->m_send_awaiter; awaiter; awaiter = awaiter->m_next)
+                {
+                    awaiter->post_wakeup_awaiter_on_close();
+                }
+
+            }
+
+        }
+
+        ~ConnImpl() noexcept
+        {
+            TINYASYNC_ASSERT(!this->m_recv_awaiter && !this->m_send_awaiter);
+            this->reset();
         }
 
         AsyncCloseAwaiter async_close() {
@@ -393,13 +460,21 @@ namespace tinyasync {
 
 #elif defined(__unix__)
 
+        auto conn = m_conn;
+        auto conn_handle = conn->m_conn_handle;        
+        if(conn_handle == NULL_SOCKET) {
+            // connection have been closed
+            return;
+        }
+
         if ((evt.events & EPOLLIN) && m_conn->m_recv_awaiter) {
             // we want to read and it's ready to read
 
             TINYASYNC_LOG("ready to read for conn_handle %d", m_conn->m_conn_handle);
 
             auto awaiter = m_conn->m_recv_awaiter;
-            int nbytes = recv(m_conn->m_conn_handle, awaiter->m_buffer_addr, (int)awaiter->m_buffer_size, 0);
+            int nbytes = ::recv(conn_handle, awaiter->m_buffer_addr, (int)awaiter->m_buffer_size, 0);
+
             TINYASYNC_LOG("recv %d bytes", nbytes);
 
             if(nbytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { 
@@ -415,7 +490,10 @@ namespace tinyasync {
 
             auto awaiter = m_conn->m_send_awaiter;
             TINYASYNC_LOG("ready to send for conn_handle %d, %d bytes at %p sending", m_conn->m_conn_handle, (int)awaiter->m_buffer_size, awaiter->m_buffer_addr);
-            int nbytes = ::send(m_conn->m_conn_handle, awaiter->m_buffer_addr, (int)awaiter->m_buffer_size, 0);
+
+            auto conn_handle = m_conn->m_conn_handle;
+            int nbytes = ::send(conn_handle, awaiter->m_buffer_addr, (int)awaiter->m_buffer_size, 0);
+
             TINYASYNC_LOG("sent %d bytes", nbytes);
 
             if(nbytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { 
@@ -431,6 +509,7 @@ namespace tinyasync {
             fprintf(stderr, "%s\n", ioe2str(evt).c_str());
             exit(1);
         }
+
 #endif
 
     }
@@ -452,6 +531,14 @@ namespace tinyasync {
         TINYASYNC_LOG("conn: %p", m_conn);
     }
 
+    bool AsyncReceiveAwaiter::await_ready() {
+        if(!m_conn->native_handle()) {
+            m_bytes_transfer = k_closed_socket_ready;
+            return true;
+        }
+        return false;
+    }
+
     bool AsyncReceiveAwaiter::await_suspend(std::coroutine_handle<TaskPromiseBase> h)
     {
         TINYASYNC_GUARD("AsyncReceiveAwaiter.await_suspend(): ");
@@ -462,7 +549,7 @@ namespace tinyasync {
         this->m_next = m_conn->m_recv_awaiter;
         m_conn->m_recv_awaiter = this;
         TINYASYNC_LOG("set recv_awaiter of conn(%p) to %p", m_conn, m_conn->m_recv_awaiter);
-
+        TINYASYNC_ASSERT(m_conn->m_conn_handle);
 
 #ifdef _WIN32
 
@@ -505,6 +592,16 @@ namespace tinyasync {
         TINYASYNC_GUARD("AsyncReceiveAwaiter.await_resume(): ");
 
         auto nbytes = (std::ptrdiff_t)m_bytes_transfer;
+
+        if(nbytes == k_closed_socket_ready) {
+            TINYASYNC_LOG("ERROR = %d, fd = %d", errno, m_conn->m_conn_handle);
+            errno = ENOTSOCK;
+            throw_errno("AsyncReceiveAwaiter::await_resume(): recv error");
+        }
+
+        // pop from front of list
+        m_conn->m_recv_awaiter = m_conn->m_recv_awaiter->m_next;
+
         if (nbytes < 0) {
             TINYASYNC_LOG("ERROR = %d, fd = %d", errno, m_conn->m_conn_handle);
             throw_errno("AsyncReceiveAwaiter::await_resume(): recv error");
@@ -517,9 +614,6 @@ namespace tinyasync {
             TINYASYNC_LOG("fd = %d, %d bytes read", m_conn->m_conn_handle, nbytes);
         }
 
-        // pop from front of list
-        m_conn->m_recv_awaiter = m_conn->m_recv_awaiter->m_next;
-        TINYASYNC_LOG("set recv_awaiter of conn(%p) to %p", m_conn, m_conn->m_recv_awaiter);
         m_conn->register_();
         return m_bytes_transfer;
     }
@@ -534,15 +628,26 @@ namespace tinyasync {
         m_bytes_transfer = 0;
     }
 
+    bool AsyncSendAwaiter::await_ready() {
+        if(!m_conn->native_handle()) {
+            m_bytes_transfer = k_closed_socket_ready;
+            return true;
+        }
+        return false;
+    }
+
     bool AsyncSendAwaiter::await_suspend(std::coroutine_handle<TaskPromiseBase> h)
     {
         TINYASYNC_LOG("AsyncSendAwaiter::await_suspend(): ");
         m_suspend_coroutine = h;
 
         // insert front of list
-        this->m_next = m_conn->m_send_awaiter;
+        if(m_bytes_transfer >= -1) {
+            this->m_next = m_conn->m_send_awaiter;
+        }
         m_conn->m_send_awaiter = this;
         TINYASYNC_LOG("set send_awaiter of conn(%p) to %p", m_conn, m_conn->m_send_awaiter);
+        TINYASYNC_ASSERT(m_conn->m_conn_handle);
 
 #ifdef _WIN32
 
@@ -584,6 +689,15 @@ namespace tinyasync {
         TINYASYNC_GUARD("AsyncSendAwaiter.await_resume(): ");
 
         auto nbytes = (std::ptrdiff_t)m_bytes_transfer;
+
+        if(nbytes == k_closed_socket_ready) {
+            TINYASYNC_LOG("ERROR = %d, fd = %d", errno, m_conn->m_conn_handle);
+            errno = ENOTSOCK;
+            throw_errno("AsyncReceiveAwaiter::await_resume(): recv error");
+        }
+        // pop from front of list
+        m_conn->m_send_awaiter = m_conn->m_send_awaiter->m_next;
+
         if (nbytes < 0) {
             TINYASYNC_LOG("ERROR = %d, fd = %d", errno, m_conn->m_conn_handle);
             throw_errno("AsyncSendAwaiter::await_resume(): send error");
@@ -596,9 +710,6 @@ namespace tinyasync {
             TINYASYNC_LOG("fd = %d, %d bytes read", m_conn->m_conn_handle, nbytes);
         }
 
-        // pop from front of list
-        m_conn->m_send_awaiter = m_conn->m_send_awaiter->m_next;
-        TINYASYNC_LOG("set recv_awaiter of conn(%p) to %p", m_conn, m_conn->m_send_awaiter);
 
         m_conn->register_();
         return m_bytes_transfer;
@@ -619,26 +730,53 @@ namespace tinyasync {
             m_impl.reset(new ConnImpl(ctx, conn_sock, added_event_poll));
         }
 
+
+        bool is_connected() {
+            return m_impl->m_conn_handle;
+        }
+
+        NativeSocket native_handle() {
+            return m_impl->m_conn_handle;
+        }
+
         AsyncReceiveAwaiter async_read(void* buffer, std::size_t bytes)
         {
+            TINYASYNC_ASSERT(m_impl.get());
             return m_impl->async_read(buffer, bytes);
         }
 
         AsyncReceiveAwaiter async_read(Buffer buffer)
         {
+            TINYASYNC_ASSERT(m_impl.get());
             return m_impl->async_read(buffer.data(), buffer.size());
         }
 
         AsyncSendAwaiter async_send(void const* buffer, std::size_t bytes)
         {
+            TINYASYNC_ASSERT(m_impl.get());
             return m_impl->async_send(buffer, bytes);
         }
 
         AsyncSendAwaiter async_send(ConstBuffer buffer)
         {
+            TINYASYNC_ASSERT(m_impl.get());
             return m_impl->async_send(buffer.data(), buffer.size());
+        }        
+
+        void ensure_close()
+        {
+            auto impl = m_impl.get();
+            if(impl->m_conn_handle)
+                impl->close();
         }
 
+        void close()
+        {
+            auto impl = m_impl.get();
+            TINYASYNC_ASSERT(impl);
+            impl->close();
+        }
+        
         AsyncCloseAwaiter async_close() {
             return m_impl->async_close();
         }
@@ -690,7 +828,9 @@ namespace tinyasync {
 #ifdef _WIN32
                 //
 #elif defined(__unix__)
-                if (m_added_to_event_pool) {
+
+                // needn't remove from epoll
+                if (m_added_to_event_pool && false) {
                     auto ctlerr = epoll_ctl(m_ctx->event_poll_handle(), EPOLL_CTL_DEL, m_socket, NULL);
                     if (ctlerr == -1) {
                         auto what = format("can't remove (from epoll) socket %x", m_socket);
@@ -699,7 +839,10 @@ namespace tinyasync {
                 }
 #endif
                 TINYASYNC_LOG("close socket = %s", socket_c_str(m_socket));
-                close_socket(m_socket);
+                if(close_socket(m_socket) < 0) {
+                    printf("%d\n", errno);
+                    std::exit(1);
+                }
                 m_socket = NULL_SOCKET;
             }
         }

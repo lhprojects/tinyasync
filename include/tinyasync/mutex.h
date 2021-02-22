@@ -567,17 +567,15 @@ namespace tinyasync
             TINYASYNC_GUARD("Event::notify_one(): ");
             TINYASYNC_LOG("");
     
+            auto awaiter = this->m_awaiter_que.pop();
 
-            auto posttask = new PostTaskEvent();
-
-            bool empty__ = false;
-            auto awaiter = this->m_awaiter_que.pop(empty__);
-            if(awaiter)
+            if(awaiter) {
+                auto posttask = new PostTaskEvent();
                 awaiter->m_next = nullptr;
-
-            posttask->m_awaiters = awaiter;
-            posttask->m_callback = on_notify;
-            m_ctx->post_task(posttask);
+                posttask->m_awaiters = awaiter;
+                posttask->m_callback = on_notify;
+                m_ctx->post_task(posttask);
+            }
             
         }
 

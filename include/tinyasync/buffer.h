@@ -160,13 +160,14 @@ namespace tinyasync
         void *alloc() noexcept
         {
             auto head = m_head;
-            if (!head)
-                TINYASYNC_UNLIKELY
-                {
+            if (!head) TINYASYNC_UNLIKELY
+            {
                     auto block_per_chunk = m_block_per_chunk;
                     auto block_size = m_block_size;
                     std::size_t memsize = block_size * block_per_chunk;
-
+                    if(!memsize) {
+                        return nullptr;
+                    }
                     // max alignment
                     auto *h = ::malloc(memsize);
                     if (!h)
@@ -184,7 +185,7 @@ namespace tinyasync
                     p->m_next = nullptr;
                     m_head = (ListNode *)h;
                     head = m_head;
-                }
+            }
             m_head = head->m_next;
             return head;
         }

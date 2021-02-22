@@ -25,6 +25,10 @@ struct LB : ListNode
 inline LB *allocate(Pool *pool)
 {
     auto b = (LB *)pool->alloc();
+    if(!b) {
+        printf("memory ex\n");
+        exit(1);
+    }
     b->buffer.m_data = b->data;
     b->buffer.m_size = block_size;
     return b;
@@ -38,7 +42,6 @@ inline void deallocate(Pool *pool, LB *b)
 void initialize_pool() {
     pool.initialize(sizeof(LB) + block_size - 1, 20);
 }
-
 
 struct Session
 {
@@ -55,25 +58,35 @@ struct Session
     }
 
     IoContext *m_ctx;
-    Connection conn;
-    Event m_on_buffer_has_data{*m_ctx};
-    Event all_done{*m_ctx};
-    Queue m_que;
-    bool m_run = true;
     Pool *m_pool;
+    Connection conn;
+
+    Queue m_que;
+    Event m_on_buffer_has_data{*m_ctx};
+
+    Event read_finish_event{*m_ctx};
+    Event send_finish_event{*m_ctx};
+    bool read_finish = false;
+    bool send_finish = false;
 
     Task<> read(IoContext &ctx)
     {
-
-        for (; m_run;)
+        for (; ;)
         {
 
             LB *b = allocate(m_pool);
             // read some
-            std::size_t nread = co_await conn.async_read(b->buffer);
+            std::size_t nread;
+            try {
+                nread = co_await conn.async_read(b->buffer);
+            } catch(...) {
+                //printf("read exception: %s\n", to_string(std::current_exception()).c_str());
+                break;
+            }
             if (nread == 0)
             {
-                m_run = false;
+                //printf("peer shutdown\n");
+                break;
             }
             nread_total += nread;
 
@@ -83,19 +96,26 @@ struct Session
 
         }
 
-        all_done.notify_one();
+        conn.ensure_close();
+        m_on_buffer_has_data.notify_one();
+        read_finish = true;
+        read_finish_event.notify_one();
     }
 
     Task<> send(IoContext &ctx)
     {
 
-        for (; m_run;)
+        for (; ;)
         {
 
-            LB *b;
+            LB *b = nullptr;
+
             // wait for data to send
             for (;;)
             {
+                if(!conn.is_connected()) {  
+                    break;
+                }                
                 auto node = m_que.pop();
                 if (node)
                 {
@@ -104,28 +124,40 @@ struct Session
                 }
                 co_await m_on_buffer_has_data;
             }
+            if(!b)
+                break;
 
             // repeat send until all are sent
             Buffer buffer = b->buffer;
             for (;;)
             {
-                std::size_t nsent = co_await conn.async_send(buffer);
-                buffer = buffer.sub_buffer(nsent);
-                nwrite_total += nsent;
-
+                if(!conn.is_connected())
+                    break;
+                std::size_t nsent;
+                try {
+                    nsent = co_await conn.async_send(buffer);
+                } catch(...) {     
+                    //printf("send exception: %s\n", to_string(std::current_exception()).c_str());
+                    break;             
+                }
                 if (nsent == 0)
                 {
-                    // peer shutdown
-                    m_run = false;
+                    //printf("peer shutdown\n");
                     break;
                 }
-                else if (!buffer.size())
+                buffer = buffer.sub_buffer(nsent);
+                nwrite_total += nsent;
+                if(!buffer.size())
                 {
                     break;
                 }
             }
             deallocate(m_pool, b);
         }
+
+        conn.ensure_close();
+        send_finish = true;
+        send_finish_event.notify_one();
     }
 };
 

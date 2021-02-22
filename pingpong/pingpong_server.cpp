@@ -7,9 +7,12 @@ Task<> start(IoContext &ctx, Session s)
 {
 	co_spawn(s.read(ctx));
 	co_await s.send(ctx);
-	for(;s.m_run;) {
-		co_await s.all_done;
+
+	// read join
+	for(;!s.read_finish;) {
+		co_await s.read_finish_event;
 	}
+
 	--nc;
 	printf("%d conn\n", nc);
 }
@@ -42,6 +45,9 @@ int main()
 {
     block_size = 1024;
     initialize_pool();
-	server();
+	try {
+		server();
+	} catch(...) {		
+	}
 	return 0;
 }

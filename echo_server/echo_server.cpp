@@ -1,4 +1,4 @@
-﻿//#define TINYASYNC_TRACE
+﻿#define TINYASYNC_TRACE
 
 #include <tinyasync/tinyasync.h>
 using namespace tinyasync;
@@ -11,6 +11,9 @@ Task<> echo(IoContext &ctx, Connection c)
 		// read some
 		auto nread = co_await c.async_read(b, 100);
 
+		if(nread) {
+			break;
+		}
 		// repeat to send all read
 		auto remain = nread;
 		char *buf = b;

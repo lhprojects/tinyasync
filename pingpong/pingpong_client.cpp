@@ -4,12 +4,14 @@
 using namespace tinyasync;
 
 int nc = 0;
-bool g_run = true;
 std::chrono::seconds timeout { 0 };
 size_t nsess;
 
-Task<> start(IoContext &ctx, Session s)
+Task<> start(IoContext &ctx, Session &s)
 {
+    ++nc;
+	printf("%d conn\n", nc);
+    
     auto lb = allocate(&pool);
     ConstBuffer buffer = lb->buffer;
     co_await s.conn.async_send(buffer);
@@ -17,11 +19,12 @@ Task<> start(IoContext &ctx, Session s)
 	co_spawn(s.read(ctx));
 	co_await s.send(ctx);
 
-	for(;s.m_run && g_run;) {
-		co_await s.all_done;
+    // read join
+	for(;!s.read_finish;) {
+		co_await s.read_finish_event;
 	}
     
-	--nc;
+    --nc;
 	printf("%d conn\n", nc);
     deallocate(&pool, lb);
 }
@@ -38,17 +41,25 @@ Task<> connect_(IoContext &ctx)
 	}
 
 	for (size_t i = 0; i <  nsess; ++i) {
-        co_spawn(start(ctx, std::move(sesses[i])));
+        co_spawn(start(ctx, sesses[i]));
 	}
     
     co_await async_sleep(ctx, timeout);
-    g_run = false;
+
+	for (size_t i = 0; i <  nsess; ++i) {
+        if(::shutdown(sesses[i].conn.native_handle(), SHUT_RDWR) < 0) {
+            printf("shutdown error %d\n", errno);
+            exit(1);
+        }
+        sesses[i].conn.close();
+    }
 
     printf("%d connection\n", (int)nsess);
     printf("%d block size\n", (int)block_size);
     printf("%.2f M/s bytes read\n", (long long)nread_total/timeout.count()/1E6);
     printf("%.2f M/s bytes write\n", (long long)nwrite_total/timeout.count()/1E6);
 
+    co_await async_sleep(ctx, std::chrono::seconds(1));
     ctx.request_abort();
 }
 
@@ -63,7 +74,7 @@ void client() {
 int main()
 {
     nsess = 10;
-    timeout = std::chrono::seconds(20);
+    timeout = std::chrono::seconds(10);
     block_size = 1024;
     initialize_pool();
 
