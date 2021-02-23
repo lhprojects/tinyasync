@@ -45,24 +45,19 @@ namespace tinyasync
             m_size = a.size() * sizeof(a.data()[0]);
         }
 
-        Buffer sub_buffer(size_t offset)
+        Buffer sub_buffer(size_t offset) const
         {
             TINYASYNC_ASSERT(offset <= m_size);
             return {m_data + offset, m_size - offset};
         }
 
-        Buffer sub_buffer(size_t offset, std::size_t cnt)
+        Buffer sub_buffer(size_t offset, std::size_t cnt) const
         {
             TINYASYNC_ASSERT(offset + cnt <= m_size);
             return {m_data + offset, cnt};
         }
 
-        std::byte *data()
-        {
-            return m_data;
-        }
-
-        std::byte const *data() const
+        std::byte *data() const
         {
             return m_data;
         }

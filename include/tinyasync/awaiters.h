@@ -195,27 +195,11 @@ namespace tinyasync {
         Buffer m_buffer_addr;
         std::size_t m_buffer_size;
         std::size_t m_bytes_transfer;
-        PostTask m_post_task;
         bool m_suspend_return;
         
 #ifdef _WIN32
         WSABUF win32_single_buffer;
 #endif
-
-        static void wakeup_awaiter_on_close(PostTask *posttask)
-        {
-            using this_type = DataAwaiterMixin<Awaiter,Buffer>;
-            auto *awaiter = (this_type*)((char*)posttask - offsetof(this_type, m_post_task));
-            awaiter->m_bytes_transfer = (std::uintptr_t)(-1);
-            errno = ENOTSOCK;
-            TINYASYNC_RESUME(awaiter->m_suspend_coroutine);
-        }
-
-        void post_wakeup_awaiter_on_close()
-        {
-            this->m_post_task.m_callback = wakeup_awaiter_on_close;
-            m_ctx->post_task(&this->m_post_task);
-        }
 
         static constexpr std::ptrdiff_t k_closed_socket_ready = -2;
         
@@ -263,27 +247,6 @@ namespace tinyasync {
 
     };
 
-    class AsyncCloseAwaiter {
-        friend class ConnImpl;
-        ConnImpl *m_conn;
-
-    public:
-        AsyncCloseAwaiter(ConnImpl *conn) {
-            m_conn = conn;
-        }
-
-        bool await_ready();
-
-        void await_suspend(std::coroutine_handle<>) {            
-            assert(false);
-        }
-
-        void await_resume() {            
-            assert(false);
-        }
-
-    };
-
     class ConnCallback : public CallbackImplBase
     {
     public:
@@ -309,6 +272,11 @@ namespace tinyasync {
         ConnCallback m_callback{ this };
         AsyncReceiveAwaiter* m_recv_awaiter = nullptr;
         AsyncSendAwaiter* m_send_awaiter = nullptr;
+        PostTask m_post_task;
+
+        // one for connection
+        // one for close
+        int m_ref_cnt = 2;
         bool m_added_to_event_pool = false;
 
         bool m_ready_to_send = true;
@@ -416,6 +384,39 @@ namespace tinyasync {
             return { *this, buffer, bytes };
         }
 
+        static void wakeup_awaiter_on_close(PostTask *posttask)
+        {
+            using this_type = ConnImpl;
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+            auto *conn = (this_type*)((char*)posttask - offsetof(this_type, m_post_task));
+#pragma GCC diagnostic pop
+
+            for(auto awaiter = conn->m_recv_awaiter; awaiter;)
+            {
+                auto next = awaiter->m_next;
+                awaiter->m_bytes_transfer = (std::uintptr_t)(-1);
+                errno = ENOTSOCK;
+                TINYASYNC_RESUME(awaiter->m_suspend_coroutine);
+                awaiter = next;
+            }
+
+            for(auto awaiter = conn->m_send_awaiter; awaiter;)
+            {
+                auto next = awaiter->m_next;
+                awaiter->m_bytes_transfer = (std::uintptr_t)(-1);
+                errno = ENOTSOCK;
+                TINYASYNC_RESUME(awaiter->m_suspend_coroutine);
+                awaiter = next;
+            }
+
+            conn->m_ref_cnt--;
+            if(!conn->m_ref_cnt) {
+                delete conn;
+            }
+        }
+
 
         void close()
         {
@@ -430,33 +431,24 @@ namespace tinyasync {
                 m_conn_handle = NULL_SOCKET;
                 m_added_to_event_pool = false;
 
-                auto conn = this;
-                // wakeup all awaiters
                 // post tasks at the end of queue
-                // after all awaiter wake up
-                // we should never recv event from e.g. epoll 
-                for(auto awaiter = conn->m_recv_awaiter; awaiter; awaiter = awaiter->m_next)
-                {           
-                    awaiter->post_wakeup_awaiter_on_close();
-                }
-
-                for(auto awaiter = conn->m_send_awaiter; awaiter; awaiter = awaiter->m_next)
-                {
-                    awaiter->post_wakeup_awaiter_on_close();
-                }
-
+                // wakeup all awaiters
+                // remain epoll_event should happen before this task
+                // callback will not response to these epoll_event
+                // after we finish the task
+                // we should never recv any epoll_event
+                // thus we can delete connection
+                m_post_task.m_callback = wakeup_awaiter_on_close;
+                m_ctx->post_task(&m_post_task);
             }
 
         }
 
         ~ConnImpl() noexcept
         {
+            TINYASYNC_GUARD("ConnImpl::~ConnImpl() ");
             TINYASYNC_ASSERT(!this->m_recv_awaiter && !this->m_send_awaiter);
-            this->reset();
-        }
-
-        AsyncCloseAwaiter async_close() {
-            return {this};
+            TINYASYNC_LOG("destruct");
         }
 
     };
@@ -829,12 +821,29 @@ namespace tinyasync {
     public:
     
         Connection() = default;
+        Connection(Connection &&) = default;
+        Connection &operator=(Connection &&) = default;
 
         Connection(IoCtxBase &ctx, NativeSocket conn_sock, bool added_event_poll)
         {
             m_impl.reset(new ConnImpl(ctx, conn_sock, added_event_poll));
         }
 
+        ~Connection()
+        {
+            auto impl = m_impl.get();
+            if(impl) {
+                ensure_close();
+                m_impl.release();
+                
+                impl->m_ref_cnt--;
+                if(!impl->m_ref_cnt) {      
+                    // ensure no epoll_event
+                    // we can free connimpl          
+                    delete impl;
+                }
+            }
+        }
 
         bool is_connected() {
             auto impl = m_impl.get();
@@ -853,7 +862,7 @@ namespace tinyasync {
             return impl->async_read(buffer, bytes);
         }
 
-        AsyncReceiveAwaiter async_read(Buffer buffer)
+        AsyncReceiveAwaiter async_read(Buffer const &buffer)
         {
             auto impl = m_impl.get();
             TINYASYNC_ASSERT(m_impl.get());
@@ -867,7 +876,7 @@ namespace tinyasync {
             return impl->async_send(buffer, bytes);
         }
 
-        AsyncSendAwaiter async_send(ConstBuffer buffer)
+        AsyncSendAwaiter async_send(ConstBuffer const &buffer)
         {
             auto impl = m_impl.get();
             TINYASYNC_ASSERT(m_impl.get());
@@ -877,14 +886,17 @@ namespace tinyasync {
         void ensure_close()
         {
             auto impl = m_impl.get();
-            if(impl->m_conn_handle)
+            TINYASYNC_ASSERT(impl);
+            if(impl->m_conn_handle) {
                 impl->close();
+            }
         }
 
         void close()
         {
             auto impl = m_impl.get();
             TINYASYNC_ASSERT(impl);
+            TINYASYNC_ASSERT(impl->m_conn_handle);
             impl->close();
         }
         
