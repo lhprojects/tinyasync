@@ -17,7 +17,6 @@ namespace tinyasync {
         std::exception_ptr m_unhandled_exception = nullptr;
         std::coroutine_handle<TaskPromiseBase> m_continuum = nullptr;
         bool m_dangling = false;
-        std::pmr::memory_resource *m_memory_resource;
 
 
         inline static void * do_alloc(std::size_t size, std::pmr::memory_resource *memory_resource)
@@ -502,10 +501,12 @@ namespace tinyasync {
         TINYASYNC_RESUME(coroutine);
     }
 
+
+    // return true is coroutine is not done
     template<class Result>
     inline bool Task<Result>::resume()
     {
-        return resume_coroutine(this->coroutine_handle());
+        return resume_coroutine(this->coroutine_handle_base());
     }
 
 
@@ -526,8 +527,7 @@ namespace tinyasync {
     class YieldAwaiter {
     public:
         bool await_ready() noexcept { return false; }
-        void await_suspend(std::coroutine_handle<>) noexcept  {            
-        }
+        void await_suspend(std::coroutine_handle<>) noexcept { }
         void await_resume() noexcept { }
     };
 

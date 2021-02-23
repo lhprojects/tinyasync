@@ -98,30 +98,51 @@ namespace tinyasync
     static constexpr std::size_t CallbackImplBase_size = sizeof(CallbackImplBase);
     static_assert(std::is_standard_layout_v<CallbackImplBase>);
 
-    struct PostTask
+    class PostTask
     {
-        // use internally
-        ListNode m_node;
+    public:
         // your callback
         using callback_type = void (*)(PostTask *);
+
+        void set_callback(callback_type ptr) {
+            m_callback = ptr;
+        }
+        callback_type get_callback() {
+            return m_callback;
+        }
+    private:
+        friend class IoCtxBase;
+        // use internally
+        ListNode m_node;
         callback_type m_callback;
 
-        static PostTask *from_node(ListNode *node)
-        {
-            return (PostTask *)((char *)node - offsetof(PostTask, m_node));
-        }
+
     };
 
     class IoCtxBase
     {
+    protected:
+        static PostTask *from_node_to_post_task(ListNode *node) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+            return (PostTask *)((char *)node - offsetof(PostTask, m_node));
+#pragma GCC diagnostic pop
+        }
+
+        static ListNode *get_node(PostTask *posttask) {
+            return &posttask->m_node;
+        }
+        
     public:
         virtual void run() = 0;
         virtual void post_task(PostTask *) = 0;
         virtual void request_abort() = 0;
         virtual ~IoCtxBase() {}
 
+        // avoid using virtual functions ...
         NativeHandle m_epoll_handle = NULL_HANDLE;
         std::pmr::memory_resource *m_memory_resource;
+
         NativeHandle event_poll_handle()
         {
             return m_epoll_handle;
@@ -141,11 +162,6 @@ namespace tinyasync
             return m_ctx.get();
         }
 
-        std::pmr::memory_resource *get_memory_resource_for_task()
-        {
-            auto *ctx = m_ctx.get();
-            return ctx->m_memory_resource;
-        }
         void run()
         {
             auto *ctx = m_ctx.get();
@@ -162,6 +178,12 @@ namespace tinyasync
         {
             auto *ctx = m_ctx.get();
             ctx->request_abort();
+        }
+
+        std::pmr::memory_resource *get_memory_resource_for_task()
+        {
+            auto *ctx = m_ctx.get();
+            return ctx->m_memory_resource;
         }
 
         NativeHandle event_poll_handle()
@@ -313,7 +335,7 @@ namespace tinyasync
         }
         else
         {
-            m_task_queue.push(&task->m_node);
+            m_task_queue.push(get_node(task));
         }
     }
 
@@ -366,10 +388,11 @@ namespace tinyasync
                     m_que_lock.unlock();
                 }
 
-                PostTask *task = PostTask::from_node(node);
+                PostTask *task = from_node_to_post_task(node);
                 try
                 {
-                    (task->m_callback)(task);
+                    auto callback = task->get_callback();
+                    callback(task);
                 }
                 catch (...)
                 {

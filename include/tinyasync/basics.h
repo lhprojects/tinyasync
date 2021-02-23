@@ -204,19 +204,22 @@ namespace tinyasync {
 
 
     // compiler related
-#ifdef __GNUC__
+#if defined(__GNUC__) || defined(__clang__)
+#define TINYASYNC_NOINL __attribute__((noinline))
 #define TINYASYNC_VCINL inline
 #define TINYASYNC_FUNCNAME __PRETTY_FUNCTION__
 #define TINYASYNC_LIKELY [[likely]]
 #define TINYASYNC_UNLIKELY [[unlikely]]
 
 #elif defined(_MSC_VER)
+#define TINASYNC_NOINL __declspec(noinline)
 #define TINYASYNC_VCINL __forceinline
 #define TINYASYNC_FUNCNAME __func__
 #define TINYASYNC_LIKELY [[likely]]
 #define TINYASYNC_UNLIKELY [[unlikely]]
 
 #else
+#define TINASYNC_NOINL
 #define TINYASYNC_VCINL inline
 #define TINYASYNC_FUNCNAME __func__
 #define TINYASYNC_LIKELY

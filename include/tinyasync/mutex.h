@@ -364,7 +364,7 @@ namespace tinyasync
             // pop from mutex list
             MutexLockAwaiter *awaiter = MutexLockAwaiter::from_node(node);            
             // insert into ctx's task list
-            awaiter->m_posttask.m_callback = MutexLockAwaiter::on_callback;
+            awaiter->m_posttask.set_callback(MutexLockAwaiter::on_callback);
             m_ctx->post_task(&awaiter->m_posttask);
         }
         else
@@ -573,7 +573,7 @@ namespace tinyasync
                 auto posttask = new PostTaskEvent();
                 awaiter->m_next = nullptr;
                 posttask->m_awaiters = awaiter;
-                posttask->m_callback = on_notify;
+                posttask->set_callback(on_notify);
                 m_ctx->post_task(posttask);
             }
             
@@ -591,7 +591,7 @@ namespace tinyasync
             this->m_awaiter_que.m_before_head.m_next = nullptr;
             this->m_awaiter_que.m_tail = nullptr;
 
-            posttask->m_callback = on_notify;
+            posttask->set_callback(on_notify);
             m_ctx->post_task(posttask);
             
 
@@ -705,7 +705,7 @@ namespace tinyasync
 
             awaiter->m_next = nullptr;
             posttask->m_awaiters = awaiter;
-            posttask->m_callback = on_notify;
+            posttask->set_callback(on_notify);
             m_ctx->post_task(posttask);
             
 
@@ -724,10 +724,9 @@ namespace tinyasync
             this->m_awaiter_que.m_tail = nullptr;
             m_native_mutex.unlock();
 
-            posttask->m_callback = on_notify;
+            posttask->set_callback(on_notify);
             m_ctx->post_task(posttask);
             
-
         }
 
     };

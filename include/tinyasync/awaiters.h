@@ -438,7 +438,7 @@ namespace tinyasync {
                 // after we finish the task
                 // we should never recv any epoll_event
                 // thus we can delete connection
-                m_post_task.m_callback = wakeup_awaiter_on_close;
+                m_post_task.set_callback(wakeup_awaiter_on_close);
                 m_ctx->post_task(&m_post_task);
             }
 
