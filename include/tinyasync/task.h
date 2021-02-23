@@ -22,8 +22,8 @@ namespace tinyasync {
         inline static void * do_alloc(std::size_t size, std::pmr::memory_resource *memory_resource)
         {
             // put allocator at the end of the frame
-            auto memory_resource_size =  sizeof(memory_resource);
-            auto memory_resource_align =  alignof(memory_resource);
+            auto memory_resource_size =  sizeof(std::pmr::memory_resource*);
+            auto memory_resource_align =  alignof(std::pmr::memory_resource*);
             auto memory_resource_offset = (size  + memory_resource_align - 1u) & ~(memory_resource_align - 1u);
 
             auto ptr = memory_resource->allocate(memory_resource_offset + memory_resource_size);

@@ -9,7 +9,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
     add_compile_options(-fcoroutines -std=c++2a -Wfatal-errors)
 else()
-    add_compile_options(-fcoroutines-ts -std=c++2a -Wfatal-errors)
+    add_compile_options(-fcoroutines-ts -std=c++2a -Wfatal-errors -stdlib=libc++)
 endif()
 
 include_directories(./include)

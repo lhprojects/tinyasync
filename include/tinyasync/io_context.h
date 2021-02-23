@@ -320,7 +320,7 @@ namespace tinyasync
         if constexpr (k_multiple_thread)
         {
             m_que_lock.lock();
-            m_task_queue.push(&task->m_node);
+            m_task_queue.push(get_node(task));
             m_task_queue_size += 1;
             auto thread_wating = m_thread_waiting;
             m_que_lock.unlock();

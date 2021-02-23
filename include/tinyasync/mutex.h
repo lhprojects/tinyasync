@@ -674,7 +674,7 @@ namespace tinyasync
    class Condv
 {
     public:
-        using mutex_type = Trait::spinlock_type;
+        using mutex_type = typename Trait::spinlock_type;
         Queue m_awaiter_que;
         mutex_type m_native_mutex;
         IoContext *m_ctx = nullptr;

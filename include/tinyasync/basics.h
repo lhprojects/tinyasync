@@ -2,7 +2,7 @@
 #ifndef TINYASYNC_BASICS_H
 #define TINYASYNC_BASICS_H
 
-#ifdef __clang__
+#if defined(__clang__)
 
 #include <experimental/coroutine>
 #include <experimental/memory_resource>
@@ -11,7 +11,10 @@ namespace std {
     using std::experimental::suspend_never;
     using std::experimental::coroutine_handle;
     using std::experimental::noop_coroutine;
-    using std::experimental::memory_resource;
+    namespace pmr {
+        using std::experimental::pmr::get_default_resource;
+        using std::experimental::pmr::memory_resource;
+    }
 }
 #else
 
@@ -203,27 +206,41 @@ namespace tinyasync {
 #endif
 
 
-    // compiler related
-#if defined(__GNUC__) || defined(__clang__)
+// compiler related
+// clang also define __GNUC__ ...
+
+#if defined(__GNUC__) && !defined(__clang__) // gcc only
+#define TINYASYNC_LIKELY [[likely]]
+#define TINYASYNC_UNLIKELY [[unlikely]]
+#endif
+
+#if defined(__clang__) // clang only
+#define TINYASYNC_LIKELY
+#define TINYASYNC_UNLIKELY
+#endif
+
+#if defined(__GNUC__) || defined(__clang__) // gcc or clang
+
 #define TINYASYNC_NOINL __attribute__((noinline))
 #define TINYASYNC_VCINL inline
 #define TINYASYNC_FUNCNAME __PRETTY_FUNCTION__
-#define TINYASYNC_LIKELY [[likely]]
-#define TINYASYNC_UNLIKELY [[unlikely]]
 
-#elif defined(_MSC_VER)
+#elif defined(_MSC_VER) // vc++ only
+
 #define TINASYNC_NOINL __declspec(noinline)
 #define TINYASYNC_VCINL __forceinline
 #define TINYASYNC_FUNCNAME __func__
 #define TINYASYNC_LIKELY [[likely]]
 #define TINYASYNC_UNLIKELY [[unlikely]]
 
-#else
+#else // oh... try to pass compile
+
+#define TINYASYNC_LIKELY
+#define TINYASYNC_UNLIKELY
+
 #define TINASYNC_NOINL
 #define TINYASYNC_VCINL inline
 #define TINYASYNC_FUNCNAME __func__
-#define TINYASYNC_LIKELY
-#define TINYASYNC_UNLIKELY
 
 #endif
 
@@ -245,7 +262,7 @@ namespace tinyasync {
     TINYASYNC_VCINL T initialize_once(std::atomic<T>& atom, T uninitialized_flag, std::mutex& mtx, L func)
     {
         T t = atom.load(std::memory_order_acquire);
-        if (t == uninitialized_flag) [[unlikely]] {
+        if (t == uninitialized_flag) TINYASYNC_UNLIKELY {
             t = do_initialize_once(atom, uninitialized_flag, mtx, func);
         }
         return t;

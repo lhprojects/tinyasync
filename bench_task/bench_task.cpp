@@ -1,7 +1,8 @@
+#ifndef TINYASYNC_BASICS_H
+#include <tinyasync/tinyasync.h>
+#endif
 
 #include <chrono>
-#include <tinyasync/tinyasync.h>
-
 using namespace tinyasync;
 Task<> task_generator(uint64_t n, uint64_t &x)
 {
@@ -31,7 +32,7 @@ struct Iter
 	{
 		return v;
 	}
-	bool operator!=(std::default_sentinel_t)
+	bool operator!=(int)
 	{
 		return v != n;
 	}
@@ -61,16 +62,16 @@ int main(int argc, char *[])
         uint64_t x;
         Task<> task = task_generator(N, x);
         for (; task.resume(); ) {
-            total += x;
+            total += ((x << 1) + x%2);
         }
         return total;
     }, N, "task");
 
     timeit([&]() {  
         uint64_t total = 0;
-		for (Iter iter(N); iter != std::default_sentinel; ++iter) {
+		for (Iter iter(N); iter != 0; ++iter) {
             uint64_t x = *iter;
-            total += x;
+            total += ((x << 1) + x%2);
 		}
         return total;
     }, N, "iter");
@@ -80,7 +81,7 @@ int main(int argc, char *[])
         uint64_t n = N;
 		for (uint64_t i = 0; i < n; ++i) {
             uint64_t x = i;
-            total += x;
+            total += ((x << 1) + x%2);
 		}
         return total;
     }, N, "naive");
