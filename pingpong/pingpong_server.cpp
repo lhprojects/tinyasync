@@ -2,6 +2,7 @@
 #include "echo_common.h"
 
 int nc = 0;
+Pool pool;
 
 Task<> start(IoContext &ctx, Session s)
 {
@@ -30,12 +31,20 @@ Task<> listen(IoContext &ctx)
 
 }
 
+Task<> exit_timeout(IoContext &ctx) {
+	co_await async_sleep(ctx, std::chrono::seconds(15));
+	exit(0);
+}
+
 void server() {	
 	TINYASYNC_GUARD("server():");
 
 	IoContext ctx;
 
 	co_spawn(listen(ctx));
+
+	// enable only if profile
+	//co_spawn(exit_timeout(ctx));
 
 	TINYASYNC_LOG("run");
 	ctx.run();
@@ -44,7 +53,7 @@ void server() {
 int main()
 {
     block_size = 1024;
-    initialize_pool();
+    initialize_pool(pool);
 	try {
 		server();
 	} catch(...) {		

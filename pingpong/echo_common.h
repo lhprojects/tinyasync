@@ -10,10 +10,9 @@
 
 using namespace tinyasync;
 
-uint64_t nwrite_total;
-uint64_t nread_total;
+std::atomic_uint64_t nwrite_total;
+std::atomic_uint64_t nread_total;
 size_t block_size;
-Pool pool;
 
 
 struct LB : ListNode
@@ -39,7 +38,8 @@ inline void deallocate(Pool *pool, LB *b)
     pool->free(b);
 }
 
-void initialize_pool() {
+void initialize_pool(Pool &pool)
+{
     pool.initialize(sizeof(LB) + block_size - 1, 20);
 }
 

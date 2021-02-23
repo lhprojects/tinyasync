@@ -189,17 +189,19 @@ namespace tinyasync {
         friend class ConnCallback;
 
         Awaiter* m_next;
-        IoContext* m_ctx;
+        IoCtxBase* m_ctx;
         ConnImpl* m_conn;
         std::coroutine_handle<TaskPromiseBase> m_suspend_coroutine;
         Buffer m_buffer_addr;
         std::size_t m_buffer_size;
         std::size_t m_bytes_transfer;
         PostTask m_post_task;
+        bool m_suspend_return;
         
 #ifdef _WIN32
         WSABUF win32_single_buffer;
 #endif
+
         static void wakeup_awaiter_on_close(PostTask *posttask)
         {
             using this_type = DataAwaiterMixin<Awaiter,Buffer>;
@@ -231,9 +233,9 @@ namespace tinyasync {
         bool await_ready();
 
         template<class Promise>
-        inline void await_suspend(std::coroutine_handle<Promise> suspend_coroutine) {
+        inline bool await_suspend(std::coroutine_handle<Promise> suspend_coroutine) {
             std::coroutine_handle<TaskPromiseBase> h = suspend_coroutine.promise().coroutine_handle_base();
-            await_suspend(h);
+            return await_suspend(h);
         }
 
         bool await_suspend(std::coroutine_handle<TaskPromiseBase> h);
@@ -250,9 +252,9 @@ namespace tinyasync {
         bool await_ready();
 
         template<class Promise>
-        inline void await_suspend(std::coroutine_handle<Promise> suspend_coroutine) {
+        inline bool await_suspend(std::coroutine_handle<Promise> suspend_coroutine) {
             std::coroutine_handle<TaskPromiseBase> h = suspend_coroutine.promise().coroutine_handle_base();
-            await_suspend(h);
+            return await_suspend(h);
         }
 
         bool await_suspend(std::coroutine_handle<TaskPromiseBase> h);
@@ -302,12 +304,15 @@ namespace tinyasync {
         friend class ConnCallback;
 
 
-        IoContext* m_ctx;
+        IoCtxBase* m_ctx;
         NativeSocket m_conn_handle;
         ConnCallback m_callback{ this };
         AsyncReceiveAwaiter* m_recv_awaiter = nullptr;
         AsyncSendAwaiter* m_send_awaiter = nullptr;
         bool m_added_to_event_pool = false;
+
+        bool m_ready_to_send = true;
+        bool m_ready_to_recv = true;
 
     public:
 
@@ -363,19 +368,39 @@ namespace tinyasync {
             }
         }
 
-        ConnImpl(IoContext& ctx, NativeSocket conn_sock, bool added_event_poll)
+        ConnImpl(IoCtxBase &ctx, NativeSocket conn_sock, bool added_event_poll)
         {
             TINYASYNC_GUARD("Connection.Connection(): ");
             TINYASYNC_LOG("conn_socket %p", conn_sock);
 
             m_ctx = &ctx;
             m_conn_handle = conn_sock;
-            m_added_to_event_pool = added_event_poll;
+
+
+            auto m_conn = this;
+            epoll_event evt;
+            evt.events = EPOLLIN | EPOLLOUT | EPOLLEXCLUSIVE | EPOLLET;
+            evt.data.ptr = &m_conn->m_callback;
+            int epoll_clt_addmod;
+            if(!added_event_poll) {
+                epoll_clt_addmod = EPOLL_CTL_ADD;
+                TINYASYNC_LOG("epoll_ctl(EPOLL_CTL_ADD, %s) for conn_handle = %d",
+                    ioe2str(evt).c_str(), m_conn->m_conn_handle);
+            } else {
+                epoll_clt_addmod = EPOLL_CTL_MOD;
+                TINYASYNC_LOG("epoll_ctl(EPOLL_CTL_MOD, %s) for conn_handle = %d",
+                    ioe2str(evt).c_str(), m_conn->m_conn_handle);
+            }
+            m_conn->m_added_to_event_pool = true;
+
+            int clterr = epoll_ctl(m_ctx->event_poll_handle(), epoll_clt_addmod, m_conn->m_conn_handle, &evt);
+            if(clterr == -1) {
+                TINYASYNC_LOG("epoll_ctl failed for conn_handle = %d", m_conn->m_conn_handle);
+                throw_errno(format("can't epoll_clt for conn_handle = %s", socket_c_str(m_conn->m_conn_handle)));
+            }
 
         }
 
-        ConnImpl(ConnImpl&& r) = delete;
-        ConnImpl& operator=(ConnImpl&& r) = delete;
         ConnImpl(ConnImpl const&) = delete;
         ConnImpl& operator=(ConnImpl const&) = delete;
 
@@ -464,47 +489,94 @@ namespace tinyasync {
         auto conn_handle = conn->m_conn_handle;        
         if(conn_handle == NULL_SOCKET) {
             // connection have been closed
+            // use post task to wakeup awaiters
             return;
         }
 
-        if ((evt.events & EPOLLIN) && m_conn->m_recv_awaiter) {
+        // now conn must be alive
+        // so pre-load them
+        auto recv_awaiter = m_conn->m_recv_awaiter;
+        auto send_awaiter = m_conn->m_send_awaiter;
+
+        int events = evt.events;
+        if(events & EPOLLIN) {
+            m_conn->m_ready_to_recv = true;
+        }
+        if(events & EPOLLOUT) {
+            m_conn->m_ready_to_send = true;
+        }
+
+        if ((events & EPOLLIN) && recv_awaiter) {
             // we want to read and it's ready to read
 
-            TINYASYNC_LOG("ready to read for conn_handle %d", m_conn->m_conn_handle);
+            auto awaiter = recv_awaiter;
 
-            auto awaiter = m_conn->m_recv_awaiter;
-            int nbytes = ::recv(conn_handle, awaiter->m_buffer_addr, (int)awaiter->m_buffer_size, 0);
+            do {
+                std::size_t desired_bytes = awaiter->m_buffer_size;
+                TINYASYNC_LOG("ready to read for conn_handle %d, %d bytes at %p reading",
+                    conn_handle, (int)awaiter->m_buffer_size, awaiter->m_buffer_addr);
 
-            TINYASYNC_LOG("recv %d bytes", nbytes);
+                int nbytes = ::recv(conn_handle, awaiter->m_buffer_addr, (int)awaiter->m_buffer_size, 0);
 
-            if(nbytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { 
-                // try again latter ...
-            } else {
-                // may cause Connection self deleted
-                // so we should not want to read and send at the same
-                awaiter->m_bytes_transfer = (std::ptrdiff_t)nbytes;
-                TINYASYNC_RESUME(awaiter->m_suspend_coroutine);
-            }
-        } else if ((evt.events & EPOLLOUT) && m_conn->m_send_awaiter) {
+                TINYASYNC_LOG("recv %d bytes", nbytes);
+
+                if(nbytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { 
+                    // try again latter ...
+                    m_conn->m_ready_to_recv = false;
+                    break;
+                } else {
+                    // may cause self deleted
+                    awaiter->m_bytes_transfer = (std::ptrdiff_t)nbytes;
+                    TINYASYNC_RESUME(awaiter->m_suspend_coroutine);
+                }
+
+                if(nbytes < desired_bytes) {
+                    m_conn->m_ready_to_recv = false;
+                    break;
+                }
+
+                awaiter = awaiter->m_next;
+            } while(awaiter);
+
+        }
+        
+        if((events & EPOLLOUT) && send_awaiter)
+        {
             // we want to send and it's ready to read
 
-            auto awaiter = m_conn->m_send_awaiter;
-            TINYASYNC_LOG("ready to send for conn_handle %d, %d bytes at %p sending", m_conn->m_conn_handle, (int)awaiter->m_buffer_size, awaiter->m_buffer_addr);
+            // send_awaiter is not nullptr
+            // the connection must be alive
 
-            auto conn_handle = m_conn->m_conn_handle;
-            int nbytes = ::send(conn_handle, awaiter->m_buffer_addr, (int)awaiter->m_buffer_size, 0);
+            auto awaiter = send_awaiter;
 
-            TINYASYNC_LOG("sent %d bytes", nbytes);
+            do {
+                std::size_t desired_bytes = awaiter->m_buffer_size;
+                TINYASYNC_LOG("ready to send for conn_handle %d, %d bytes at %p sending",
+                    conn_handle, (int)awaiter->m_buffer_size, awaiter->m_buffer_addr);
 
-            if(nbytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { 
-                // try again latter ...
-            } else {
-                // may cause Connection self deleted
-                // so we should not want to read and send at the same
-                awaiter->m_bytes_transfer = (std::ptrdiff_t)nbytes;
-                TINYASYNC_RESUME(awaiter->m_suspend_coroutine);
-            }
-        } else {
+                int nbytes = ::send(conn_handle, awaiter->m_buffer_addr, (int)awaiter->m_buffer_size, 0);
+
+                TINYASYNC_LOG("sent %d bytes", nbytes);
+
+                if(nbytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { 
+                    // try again latter ...
+                    m_conn->m_ready_to_send = false;
+                    break;
+                } else {
+                    awaiter->m_bytes_transfer = (std::ptrdiff_t)nbytes;
+                    TINYASYNC_RESUME(awaiter->m_suspend_coroutine);
+                }
+
+                if(nbytes < desired_bytes) {
+                    m_conn->m_ready_to_send = false;
+                    break;
+                }
+
+                awaiter = awaiter->m_next;
+            } while(awaiter);
+        }
+        
+        if(!(   events & (EPOLLIN|EPOLLOUT) )) {
             TINYASYNC_LOG("not processed event for conn_handle %x", errno, m_conn->m_conn_handle);
             fprintf(stderr, "%s\n", ioe2str(evt).c_str());
             exit(1);
@@ -512,11 +584,6 @@ namespace tinyasync {
 
 #endif
 
-    }
-
-    bool AsyncCloseAwaiter::await_ready() {
-        m_conn->reset();
-        return true;
     }
 
     AsyncReceiveAwaiter::AsyncReceiveAwaiter(ConnImpl& conn, void* b, std::size_t n)
@@ -531,7 +598,8 @@ namespace tinyasync {
         TINYASYNC_LOG("conn: %p", m_conn);
     }
 
-    bool AsyncReceiveAwaiter::await_ready() {
+    bool AsyncReceiveAwaiter::await_ready()
+    {
         if(!m_conn->native_handle()) {
             m_bytes_transfer = k_closed_socket_ready;
             return true;
@@ -543,13 +611,9 @@ namespace tinyasync {
     {
         TINYASYNC_GUARD("AsyncReceiveAwaiter.await_suspend(): ");
         TINYASYNC_LOG("try to receive %zu bytes from %s", m_buffer_size, socket_c_str(m_conn->m_conn_handle));
-        m_suspend_coroutine = h;
-
-        // insert into front of list
-        this->m_next = m_conn->m_recv_awaiter;
-        m_conn->m_recv_awaiter = this;
-        TINYASYNC_LOG("set recv_awaiter of conn(%p) to %p", m_conn, m_conn->m_recv_awaiter);
         TINYASYNC_ASSERT(m_conn->m_conn_handle);
+        auto conn =  m_conn;
+        NativeSocket conn_handle = conn->m_conn_handle;
 
 #ifdef _WIN32
 
@@ -580,8 +644,29 @@ namespace tinyasync {
         return true;
 
 #elif defined(__unix__)
-        m_conn->register_();
-        return true;
+
+    if(conn->m_ready_to_recv) {
+        auto nbytes = ::recv(conn_handle, m_buffer_addr, m_buffer_size, 0);
+        if(nbytes == -1) {
+            if(errno == EAGAIN || errno == EWOULDBLOCK) {
+                conn->m_ready_to_recv = false;
+            } else {
+                throw_errno("recv error");
+            }
+        } else {
+            m_suspend_return = false;
+            m_bytes_transfer = (std::ptrdiff_t)nbytes;
+            return false;
+        }
+    }
+
+    m_suspend_coroutine = h;
+    // insert into front of list
+    this->m_next = m_conn->m_recv_awaiter;
+    m_conn->m_recv_awaiter = this;
+    TINYASYNC_LOG("set recv_awaiter of conn(%p) to %p", m_conn, m_conn->m_recv_awaiter);
+    m_suspend_return = true;
+    return true;
 #endif
 
     }
@@ -599,8 +684,10 @@ namespace tinyasync {
             throw_errno("AsyncReceiveAwaiter::await_resume(): recv error");
         }
 
-        // pop from front of list
-        m_conn->m_recv_awaiter = m_conn->m_recv_awaiter->m_next;
+        if(m_suspend_return) {
+            // pop from front of list
+            m_conn->m_recv_awaiter = m_conn->m_recv_awaiter->m_next;
+        }
 
         if (nbytes < 0) {
             TINYASYNC_LOG("ERROR = %d, fd = %d", errno, m_conn->m_conn_handle);
@@ -614,7 +701,6 @@ namespace tinyasync {
             TINYASYNC_LOG("fd = %d, %d bytes read", m_conn->m_conn_handle, nbytes);
         }
 
-        m_conn->register_();
         return m_bytes_transfer;
     }
 
@@ -628,7 +714,8 @@ namespace tinyasync {
         m_bytes_transfer = 0;
     }
 
-    bool AsyncSendAwaiter::await_ready() {
+    bool AsyncSendAwaiter::await_ready()
+    {
         if(!m_conn->native_handle()) {
             m_bytes_transfer = k_closed_socket_ready;
             return true;
@@ -639,15 +726,11 @@ namespace tinyasync {
     bool AsyncSendAwaiter::await_suspend(std::coroutine_handle<TaskPromiseBase> h)
     {
         TINYASYNC_LOG("AsyncSendAwaiter::await_suspend(): ");
-        m_suspend_coroutine = h;
-
-        // insert front of list
-        if(m_bytes_transfer >= -1) {
-            this->m_next = m_conn->m_send_awaiter;
-        }
-        m_conn->m_send_awaiter = this;
-        TINYASYNC_LOG("set send_awaiter of conn(%p) to %p", m_conn, m_conn->m_send_awaiter);
         TINYASYNC_ASSERT(m_conn->m_conn_handle);
+
+        auto conn =  m_conn;
+        NativeSocket conn_handle = conn->m_conn_handle;
+
 
 #ifdef _WIN32
 
@@ -679,7 +762,27 @@ namespace tinyasync {
         return true;
 
 #elif defined(__unix__)
-        m_conn->register_();
+        if(conn->m_ready_to_send) {
+            auto nbytes = ::send(conn_handle, m_buffer_addr, m_buffer_size, 0);
+            if(nbytes == -1) {
+                if(errno == EAGAIN) {
+                    conn->m_ready_to_send = false;
+                } else {
+                    throw_errno("send error");
+                }
+            } else {
+                m_bytes_transfer = (std::ptrdiff_t)nbytes;
+                m_suspend_return = false;
+                return false;
+            }
+        }
+
+        m_suspend_coroutine = h;
+        // insert front of list
+        this->m_next = m_conn->m_send_awaiter;
+        m_conn->m_send_awaiter = this;
+        TINYASYNC_LOG("set send_awaiter of conn(%p) to %p", m_conn, m_conn->m_send_awaiter);
+        m_suspend_return = true;
         return true;
 #endif
     }
@@ -695,8 +798,11 @@ namespace tinyasync {
             errno = ENOTSOCK;
             throw_errno("AsyncReceiveAwaiter::await_resume(): recv error");
         }
-        // pop from front of list
-        m_conn->m_send_awaiter = m_conn->m_send_awaiter->m_next;
+
+        if(m_suspend_return) {
+            // pop from front of list
+            m_conn->m_send_awaiter = m_conn->m_send_awaiter->m_next;
+        }
 
         if (nbytes < 0) {
             TINYASYNC_LOG("ERROR = %d, fd = %d", errno, m_conn->m_conn_handle);
@@ -711,7 +817,6 @@ namespace tinyasync {
         }
 
 
-        m_conn->register_();
         return m_bytes_transfer;
     }
 
@@ -725,42 +830,48 @@ namespace tinyasync {
     
         Connection() = default;
 
-        Connection(IoContext& ctx, NativeSocket conn_sock, bool added_event_poll)
+        Connection(IoCtxBase &ctx, NativeSocket conn_sock, bool added_event_poll)
         {
             m_impl.reset(new ConnImpl(ctx, conn_sock, added_event_poll));
         }
 
 
         bool is_connected() {
-            return m_impl->m_conn_handle;
+            auto impl = m_impl.get();
+            return impl->m_conn_handle;
         }
 
         NativeSocket native_handle() {
-            return m_impl->m_conn_handle;
+            auto impl = m_impl.get();
+            return impl->m_conn_handle;
         }
 
         AsyncReceiveAwaiter async_read(void* buffer, std::size_t bytes)
         {
+            auto impl = m_impl.get();
             TINYASYNC_ASSERT(m_impl.get());
-            return m_impl->async_read(buffer, bytes);
+            return impl->async_read(buffer, bytes);
         }
 
         AsyncReceiveAwaiter async_read(Buffer buffer)
         {
+            auto impl = m_impl.get();
             TINYASYNC_ASSERT(m_impl.get());
-            return m_impl->async_read(buffer.data(), buffer.size());
+            return impl->async_read(buffer.data(), buffer.size());
         }
 
         AsyncSendAwaiter async_send(void const* buffer, std::size_t bytes)
         {
+            auto impl = m_impl.get();
             TINYASYNC_ASSERT(m_impl.get());
-            return m_impl->async_send(buffer, bytes);
+            return impl->async_send(buffer, bytes);
         }
 
         AsyncSendAwaiter async_send(ConstBuffer buffer)
         {
+            auto impl = m_impl.get();
             TINYASYNC_ASSERT(m_impl.get());
-            return m_impl->async_send(buffer.data(), buffer.size());
+            return impl->async_send(buffer.data(), buffer.size());
         }        
 
         void ensure_close()
@@ -777,10 +888,6 @@ namespace tinyasync {
             impl->close();
         }
         
-        AsyncCloseAwaiter async_close() {
-            return m_impl->async_close();
-        }
-
     };
 
 
@@ -788,10 +895,12 @@ namespace tinyasync {
     class SocketMixin {
 
     protected:
+        friend class Acceptor;
+        friend class AcceptorImpl;
         friend class AsyncReceiveAwaiter;
         friend class AsyncSendAwaiter;
 
-        IoContext* m_ctx;
+        IoCtxBase* m_ctx;
         Protocol m_protocol;
         Endpoint m_endpoint;
         NativeSocket m_socket;
@@ -800,18 +909,34 @@ namespace tinyasync {
     public:
 
 
+        void reset_io_context(IoCtxBase &ctx, SocketMixin &socket)
+        {
+            m_ctx = &ctx;
+            m_protocol = socket.m_protocol;
+            m_endpoint = socket.m_endpoint;
+            m_socket = socket.m_socket;
+            m_added_to_event_pool = false;
+        }
+
         NativeSocket native_handle() const noexcept
         {
             return m_socket;
 
         }
 
-        SocketMixin(IoContext& ctx)
+        SocketMixin(IoCtxBase &ctx)
         {
             m_ctx = &ctx;
             m_socket = NULL_SOCKET;
             m_added_to_event_pool = false;
 
+        }
+
+        SocketMixin()
+        {
+            m_ctx = nullptr;
+            m_socket = NULL_SOCKET;
+            m_added_to_event_pool = false;
         }
 
         void open(Protocol const& protocol, bool blocking = false)
@@ -829,13 +954,15 @@ namespace tinyasync {
                 //
 #elif defined(__unix__)
 
-                // needn't remove from epoll
-                if (m_added_to_event_pool && false) {
+                if (m_ctx && m_added_to_event_pool) {
+                    // this socket may be added to many pool
+                    // ::close can't atomatically remove it from event pool
                     auto ctlerr = epoll_ctl(m_ctx->event_poll_handle(), EPOLL_CTL_DEL, m_socket, NULL);
                     if (ctlerr == -1) {
                         auto what = format("can't remove (from epoll) socket %x", m_socket);
                         throw_errno(what);
                     }
+                    m_added_to_event_pool = false;
                 }
 #endif
                 TINYASYNC_LOG("close socket = %s", socket_c_str(m_socket));
@@ -869,10 +996,17 @@ namespace tinyasync {
         friend class AcceptorImpl;
         friend class AcceptorCallback;
 
+        ListNode m_node;
         AcceptorImpl* m_acceptor;
+        NativeSocket m_conn_socket;
         std::coroutine_handle<TaskPromiseBase> m_suspend_coroutine;
 
     public:
+
+        static AcceptorAwaiter *from_node(ListNode *node) {
+            return (AcceptorAwaiter *)((char*)node - offsetof(AcceptorAwaiter, m_node));
+        }
+
         bool await_ready() { return false; }
         AcceptorAwaiter(AcceptorImpl& acceptor);
 
@@ -887,9 +1021,10 @@ namespace tinyasync {
 
     class AcceptorImpl : SocketMixin
     {
+        friend class Acceptor;
         friend class AcceptorAwaiter;
         friend class AcceptorCallback;
-        AcceptorAwaiter* m_awaiter = nullptr;
+        Queue m_awaiter_que;
         AcceptorCallback m_callback = this;
 
 #ifdef _WIN32
@@ -900,11 +1035,33 @@ namespace tinyasync {
 
 
     public:
-        AcceptorImpl(IoContext& ctx) : SocketMixin(ctx)
+        AcceptorImpl(IoCtxBase &ctx) : SocketMixin(ctx)
+        {
+        }
+        AcceptorImpl() : SocketMixin()
         {
         }
 
-        AcceptorImpl(IoContext& ctx, Protocol const& protocol, Endpoint const& endpoint) : AcceptorImpl(ctx)
+        AcceptorImpl(Protocol const& protocol, Endpoint const& endpoint) : AcceptorImpl()
+        {
+            init(nullptr, protocol, endpoint);
+        }
+
+        AcceptorImpl(IoCtxBase& ctx, Protocol const& protocol, Endpoint const& endpoint) : AcceptorImpl(ctx)
+        {
+            init(&ctx, protocol, endpoint);
+        }
+
+        AcceptorImpl(AcceptorImpl const&) = delete;
+        AcceptorImpl& operator=(AcceptorImpl const&) = delete;
+
+        ~AcceptorImpl()
+        {
+            TINYASYNC_GUARD("AcceptorImpl::~AcceptorImpl(): ");
+            reset();            
+        }
+
+        void init(IoCtxBase *, Protocol const& protocol, Endpoint const& endpoint)
         {
             try {
                 // one effort triple successes
@@ -920,15 +1077,12 @@ namespace tinyasync {
             }
         }
 
-        AcceptorImpl(AcceptorImpl&& r) = delete;
-        AcceptorImpl(AcceptorImpl const&) = delete;
-        AcceptorImpl& operator=(AcceptorImpl&& r) = delete;
-        AcceptorImpl& operator=(AcceptorImpl const&) = delete;
-        ~AcceptorImpl()
+
+        void reset_io_context(IoCtxBase &ctx, AcceptorImpl &r)
         {
-            TINYASYNC_GUARD("AcceptorImpl::~AcceptorImpl(): ");
-            reset();            
+            ((SocketMixin*)this)->reset_io_context(ctx, r);
         }
+
 
         void listen()
         {
@@ -988,8 +1142,9 @@ namespace tinyasync {
 
     bool AcceptorAwaiter::await_suspend(std::coroutine_handle<TaskPromiseBase> h)
     {
-        assert(!m_acceptor->m_awaiter);
-        m_acceptor->m_awaiter = this;
+        TINYASYNC_ASSERT(m_acceptor);
+        auto acceptor = m_acceptor;
+        acceptor->m_awaiter_que.push(&this->m_node);
         m_suspend_coroutine = h;
         TINYASYNC_GUARD("AcceptorAwaiter::await_suspend(): ");
 
@@ -1027,19 +1182,19 @@ namespace tinyasync {
         return true;
 #elif defined(__unix__)
 
-        int listenfd = m_acceptor->m_socket;
-
-        epoll_event evt;
-        evt.data.ptr = &m_acceptor->m_callback;
-
         if (!m_acceptor->m_added_to_event_pool) {
+            int listenfd = m_acceptor->m_socket;
+            epoll_event evt;
+            evt.data.ptr = &m_acceptor->m_callback;
+
             // level triger by default
             // one thread one event
             evt.events = EPOLLIN | EPOLLEXCLUSIVE;
-            auto ctlerr = epoll_ctl(m_acceptor->m_ctx->event_poll_handle(), EPOLL_CTL_ADD, listenfd, &evt);
+            auto epfd = m_acceptor->m_ctx->event_poll_handle();
+            auto ctlerr = epoll_ctl(epfd, EPOLL_CTL_ADD, listenfd, &evt);
             if (ctlerr == -1) {
-                TINYASYNC_LOG("can't listen %s", socket_c_str(listenfd));
-                throw_errno(format("can't listen %x", listenfd));
+                TINYASYNC_LOG("can't await accept %s (epoll %s)", socket_c_str(listenfd), handle_c_str(epfd));
+                throw_errno(format("can't await accept %x (epoll %s)", socket_c_str(listenfd), handle_c_str(epfd)));
             }
             m_acceptor->m_added_to_event_pool = true;
         }
@@ -1053,11 +1208,13 @@ namespace tinyasync {
     Connection AcceptorAwaiter::await_resume()
     {
         TINYASYNC_GUARD("AcceptorAwaiter.await_resume(): ");
-        TINYASYNC_LOG("acceptor %p, awaiter %p", &m_acceptor, m_acceptor->m_awaiter);
+        
+        auto acceptor = m_acceptor;
+        acceptor->m_awaiter_que.pop();
+        NativeSocket conn_sock = m_conn_socket;
 
-        NativeSocket conn_sock = NULL_SOCKET;
 #ifdef _WIN32
-        conn_sock = m_acceptor->m_accept_socket;
+        conn_sock = acceptor->m_accept_socket;
 
         ULONG_PTR key = conn_sock;
         HANDLE iocp = ::CreateIoCompletionPort((NativeHandle)conn_sock, m_acceptor->m_ctx->handle(), key, 0);
@@ -1067,20 +1224,17 @@ namespace tinyasync {
         }
 #elif defined(__unix__)
 
-        // it's ready to accept
-        conn_sock = ::accept(m_acceptor->m_socket, NULL, NULL);
-        if (conn_sock == -1) {
-            throw_errno(format("can't accept %s", socket_c_str(conn_sock)));
-        }
         TINYASYNC_LOG("accepted, socket = %s", socket_c_str(conn_sock));
+        if(conn_sock == -1) {
+            throw_errno(format("can't accept, socket = %s", socket_c_str(conn_sock)).c_str());
+        }
 
         TINYASYNC_LOG("setnonblocking, socket = %s", socket_c_str(conn_sock));
         setnonblocking(conn_sock);
-
 #endif
-        m_acceptor->m_awaiter = nullptr;
-        assert(conn_sock != NULL_SOCKET);
-        return { *m_acceptor->m_ctx, conn_sock, false};
+                
+        TINYASYNC_ASSERT(conn_sock != NULL_SOCKET);
+        return { *acceptor->m_ctx, conn_sock, false };
     }
 
 
@@ -1088,9 +1242,22 @@ namespace tinyasync {
     void AcceptorCallback::on_callback(IoEvent& evt)
     {
         TINYASYNC_GUARD("AcceptorCallback.callback(): ");
-        TINYASYNC_LOG("acceptor %p, awaiter %p", m_acceptor, m_acceptor->m_awaiter);
-        AcceptorAwaiter* awaiter = m_acceptor->m_awaiter;
-        if (awaiter) {
+        auto acceptor = m_acceptor;
+        ListNode* node = acceptor->m_awaiter_que.pop();
+        if (node) {
+            // it's ready to accept
+            auto conn_sock = ::accept(acceptor->m_socket, NULL, NULL);
+            if (conn_sock == -1) {
+                if(errno == EAGAIN || errno == EWOULDBLOCK) {
+                    return;                    
+                } else {
+                    //real error
+                    // wakeup awaiter
+                }
+            }
+
+            AcceptorAwaiter *awaiter = AcceptorAwaiter::from_node(node);
+            awaiter->m_conn_socket = conn_sock;
             TINYASYNC_RESUME(awaiter->m_suspend_coroutine);
         } else {
             // this will happen when after accetor.listen() but not yet co_await acceptor.async_accept()
@@ -1101,17 +1268,37 @@ namespace tinyasync {
 
 
 
-    class Acceptor {
+    class Acceptor
+    {
 
     public:
         Acceptor(IoContext& ctx, Protocol protocol, Endpoint endpoint)
         {
-            m_impl.reset(new AcceptorImpl(ctx, protocol, endpoint));
+            m_impl.reset(new AcceptorImpl(*ctx.get_io_ctx_base(), protocol, endpoint));
         }
+
+        Acceptor(Protocol protocol, Endpoint endpoint)
+        {
+            m_impl.reset(new AcceptorImpl(protocol, endpoint));
+        }
+
+        Acceptor() = default;
 
         AcceptorAwaiter async_accept()
         {
-            return m_impl->async_accept();
+            auto impl = m_impl.get();
+            return impl->async_accept();
+        }
+
+        Acceptor reset_io_context(IoContext &ctx)
+        {
+            auto r = this->m_impl.get();
+            auto impl = new AcceptorImpl();
+            impl->reset_io_context(*ctx.get_io_ctx_base(), *r);
+            
+            Acceptor acc;
+            acc.m_impl.reset(impl);
+            return std::move(acc);
         }
 
     private:
@@ -1193,11 +1380,11 @@ namespace tinyasync {
         ConnectorCallback m_callback = { *this };
     public:
 
-        ConnectorImpl(IoContext& ctx) : SocketMixin(ctx)
+        ConnectorImpl(IoCtxBase& ctx) : SocketMixin(ctx)
         {
         }
 
-        ConnectorImpl(IoContext& ctx, Protocol const& protocol, Endpoint const& endpoint) : ConnectorImpl(ctx)
+        ConnectorImpl(IoCtxBase& ctx, Protocol const& protocol, Endpoint const& endpoint) : ConnectorImpl(ctx)
         {
             try {
                 this->open(protocol);
@@ -1344,7 +1531,7 @@ namespace tinyasync {
 
     ConnectorImpl async_connect(IoContext& ctx, Protocol const& protocol, Endpoint const& endpoint)
     {
-        return ConnectorImpl(ctx, protocol, endpoint);
+        return ConnectorImpl(*ctx.get_io_ctx_base(), protocol, endpoint);
     }
 
     void ConnectorCallback::on_callback(IoEvent& evt)
@@ -1470,7 +1657,7 @@ namespace tinyasync {
     public:
         friend class TimerCallback;
     private:
-        IoContext* m_ctx;
+        IoCtxBase* m_ctx;
         std::chrono::nanoseconds m_elapse; // mili-second
         NativeHandle m_timer_handle = NULL_HANDLE;
         std::coroutine_handle<TaskPromiseBase> m_suspend_coroutine;
@@ -1491,7 +1678,7 @@ namespace tinyasync {
 
 
         // elapse in micro-second
-        TimerAwaiter(IoContext& ctx, std::chrono::nanoseconds elapse) : m_ctx(&ctx), m_elapse(elapse)
+        TimerAwaiter(IoContext& ctx, std::chrono::nanoseconds elapse) : m_ctx(ctx.get_io_ctx_base()), m_elapse(elapse)
         {
         }
 

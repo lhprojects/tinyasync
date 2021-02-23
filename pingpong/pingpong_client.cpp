@@ -3,6 +3,7 @@
 #include "echo_common.h"
 using namespace tinyasync;
 
+Pool pool;
 int nc = 0;
 std::chrono::seconds timeout { 0 };
 size_t nsess;
@@ -76,7 +77,7 @@ int main()
     nsess = 10;
     timeout = std::chrono::seconds(10);
     block_size = 1024;
-    initialize_pool();
+    initialize_pool(pool);
 
 
 	client();

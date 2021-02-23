@@ -4,6 +4,7 @@
 #include "echo_common.h"
 using namespace tinyasync;
 
+Pool pool;
 int nc = 0;
 Task<> send(IoContext &ctx, Connection &c, LB *lb, int &nsending, Event &evt)
 {
@@ -100,7 +101,7 @@ void server() {
 int main()
 {
 	block_size = 1024;
-	initialize_pool();
+	initialize_pool(pool);
 	server();
 	return 0;
 }

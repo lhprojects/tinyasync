@@ -9,15 +9,17 @@ Task<> echo(IoContext &ctx, Connection c)
 		char b[100];
 
 		// read some
+		printf("wait read...");
 		auto nread = co_await c.async_read(b, 100);
 
-		if(nread) {
+		if(!nread) {
 			break;
 		}
 		// repeat to send all read
 		auto remain = nread;
 		char *buf = b;
 		for(;;) {
+			printf("wait send...");
 			auto sent = co_await c.async_send(buf, remain);
 			if(!sent)
 				break;

@@ -136,6 +136,7 @@ namespace tinyasync
     {
         
     public:
+
         Pool() noexcept : m_block_size(0), m_block_per_chunk(0), m_head(nullptr)
         {
         }
@@ -143,6 +144,28 @@ namespace tinyasync
         Pool(std::size_t block_size, std::size_t block_per_chunk) noexcept
         {
             initialize(block_size, block_per_chunk);
+        }
+
+        Pool(Pool &&r) {
+            m_block_size = r.m_block_size;
+            m_block_per_chunk = r.m_block_per_chunk;
+            m_head = r.m_head;
+            m_chunks = std::move(r.m_chunks);
+            r.m_head = nullptr;
+            r.m_block_size = 0;
+            r.m_block_per_chunk = 0;
+        }
+
+        void swap(Pool &r) {
+            std::swap(m_block_size, r.m_block_size);
+            std::swap(m_block_per_chunk, r.m_block_per_chunk);
+            std::swap(m_head, r.m_head);
+            std::swap(m_chunks, r.m_chunks);
+        }
+
+        Pool &operator=(Pool &&r) {
+            Pool pool(std::move(r));       
+            return *this;     
         }
 
         void initialize(std::size_t block_size, std::size_t block_per_chunk) {
