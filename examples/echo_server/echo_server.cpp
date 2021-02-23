@@ -1,4 +1,4 @@
-﻿#define TINYASYNC_TRACE
+﻿//#define TINYASYNC_TRACE
 
 #include <tinyasync/tinyasync.h>
 using namespace tinyasync;
@@ -35,6 +35,7 @@ Task<> echo(IoContext &ctx, Connection c)
 Task<> listen(IoContext &ctx)
 {
 	Acceptor acceptor(ctx, Protocol::ip_v4(), Endpoint(Address::Any(), 8899));
+	printf("echo server listening localhost:8899\n");
 	for (;;) {
 		Connection conn = co_await acceptor.async_accept();
 		co_spawn(echo(ctx, std::move(conn)));

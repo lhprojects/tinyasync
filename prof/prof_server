@@ -1,1 +1,1 @@
-LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libprofiler.so.0 CPUPROFILE=prof_server.out ../build_linux/pingpong/pingpong_server
+LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libprofiler.so.0 CPUPROFILE=prof_server.out ../build/pingpong/pingpong_server
