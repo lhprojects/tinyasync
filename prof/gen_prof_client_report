@@ -1,0 +1,1 @@
+google-pprof --pdf ../build_linux/pingpong/pingpong_client prof_client.out  > prof_client.pdf
