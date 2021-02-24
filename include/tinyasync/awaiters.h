@@ -440,6 +440,10 @@ namespace tinyasync {
             }
         }
 
+        bool is_any_shutdown() const
+        {
+            return !m_recv_shutdown && !m_send_shutdown;
+        }
 
         bool is_recv_shutdown() const
         {
@@ -456,24 +460,29 @@ namespace tinyasync {
             return m_recv_shutdown && m_send_shutdown;
         }
 
-        void ensure_recv_shutdown()
+        void safe_shutdown_recv()
         {
             if(!is_recv_shutdown()) {
                 shutdown_recv();
             }
         }
 
-        void ensure_send_shutdown()
+        void safe_shutdown_send()
         {
             if(!is_send_shutdown()) {
                 shutdown_send();
             }
         }
 
-        void ensure_recv_send_shutdown()
+        void safe_shutdown_recv_send()
         {
-            ensure_recv_shutdown();
-            ensure_send_shutdown();
+            if(!is_recv_shutdown() && !is_send_shutdown()) {
+                shutdown_recv_send();
+            } else if(!is_send_shutdown()) {
+                shutdown_send();
+            } else {
+                shutdown_recv();
+            } 
         }
 
         void shutdown_recv()
@@ -505,7 +514,7 @@ namespace tinyasync {
             m_recv_shutdown = true;
         }
 
-        void ensure_close() {
+        void safe_close() {
             auto conn_handle = m_conn_handle;
             if(conn_handle != NULL_SOCKET) {
                 this->close();
@@ -933,8 +942,8 @@ namespace tinyasync {
         {
             auto impl = m_impl.release();
             if(impl) {
-                impl->ensure_recv_send_shutdown();
-                impl->ensure_close();
+                impl->safe_shutdown_recv_send();
+                impl->safe_close();
                 
                 impl->m_ref_cnt--;
                 if(!impl->m_ref_cnt) {      
@@ -980,19 +989,38 @@ namespace tinyasync {
             impl->shutdown_send();
         }
 
-        void ensure_recv_shutdown() {
+        void safe_shutdown_recv() {
             auto impl = m_impl.get();
-            impl->ensure_recv_shutdown();
+            if(impl)
+                impl->safe_shutdown_recv();
         }
 
-        void ensure_send_shutdown() {
+        void safe_shutdown_send() {
             auto impl = m_impl.get();
-            impl->ensure_send_shutdown();
+            if(impl)
+                impl->safe_shutdown_send();
         }
 
-        void ensure_recv_send_shutdown() {
+        void safe_shutdown_recv_send() {
             auto impl = m_impl.get();
-            impl->ensure_recv_send_shutdown();
+            if(impl)
+                impl->safe_shutdown_recv_send();
+        }
+
+        void safe_close()
+        {
+            auto impl = m_impl.get();
+            if(impl) {
+                impl->safe_close();
+            }
+        }
+
+        void close()
+        {
+            auto impl = m_impl.get();
+            TINYASYNC_ASSERT(impl);
+            TINYASYNC_ASSERT(impl->m_conn_handle);
+            impl->close();
         }
 
         NativeSocket native_handle() {
@@ -1028,22 +1056,6 @@ namespace tinyasync {
             return impl->async_send(buffer.data(), buffer.size());
         }        
 
-        void ensure_close()
-        {
-            auto impl = m_impl.get();
-            TINYASYNC_ASSERT(impl);
-            if(impl->m_conn_handle) {
-                impl->close();
-            }
-        }
-
-        void close()
-        {
-            auto impl = m_impl.get();
-            TINYASYNC_ASSERT(impl);
-            TINYASYNC_ASSERT(impl->m_conn_handle);
-            impl->close();
-        }
         
     };
 

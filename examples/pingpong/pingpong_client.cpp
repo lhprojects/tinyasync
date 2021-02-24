@@ -42,7 +42,7 @@ Task<> connect_(IoContext &ctx)
 
 	for (size_t i = 0; i <  nsess; ++i) {
         // send FIN
-        sesses[i].conn.ensure_send_shutdown();
+        sesses[i].conn.safe_shutdown_send();
     }
 
 	for (size_t i = 0; i <  nsess; ++i) {
@@ -50,7 +50,7 @@ Task<> connect_(IoContext &ctx)
         for(;!sesses[i].read_finish;) {
             co_await sesses[i].read_finish_event;
         }
-        sesses[i].conn.ensure_close();
+        sesses[i].conn.safe_close();
         --nc;
         printf("%d conn\n", nc);
 

@@ -17,7 +17,7 @@ Task<> send(IoContext &ctx, Connection &c, LB *lb, int &nsending, Event &evt)
 		try {
 			auto sent = co_await c.async_send(buf, remain);
 			if(!sent) {
-				c.ensure_close();
+				c.safe_close();
 				break;
 			}
 			buf += sent;
@@ -26,7 +26,7 @@ Task<> send(IoContext &ctx, Connection &c, LB *lb, int &nsending, Event &evt)
 				break;
 			}
 		} catch(...) {
-			c.ensure_close();
+			c.safe_close();
 			break;
 		}
 
@@ -56,7 +56,7 @@ Task<> echo(IoContext &ctx, Connection c)
 			auto nread = co_await c.async_read(lb->buffer);
 			if(!nread) {
 				// send FIN
-				c.ensure_send_shutdown();
+				c.safe_shutdown_send();
 				break;
 			}
 			lb->buffer = lb->buffer.sub_buffer(0, nread);
@@ -73,7 +73,7 @@ Task<> echo(IoContext &ctx, Connection c)
 		co_await sending_evt;
 	}
 
-	c.ensure_close();
+	c.safe_close();
 
 	--nc;
 	printf("%d conn\n", nc);

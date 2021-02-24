@@ -34,7 +34,7 @@ struct Server
 		// --- recv FIN
 
 		// send FIN
-		s.conn.ensure_close();
+		s.conn.safe_close();
 
 		// await all send abort	
 		for(;!s.send_finish;) {
