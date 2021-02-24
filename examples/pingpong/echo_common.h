@@ -52,6 +52,7 @@ struct Session
     {
     }
 
+
     std::pmr::memory_resource *get_memory_resource_for_task()
     {
         return m_ctx->get_memory_resource_for_task();
@@ -78,6 +79,7 @@ struct Session
             LB *b = allocate(m_pool);
             // read some
             std::size_t nread;
+            //co_await async_sleep(ctx, std::chrono::milliseconds(100));            
             try {
                 nread = co_await conn.async_read(b->buffer);
             } catch(...) {
@@ -97,17 +99,39 @@ struct Session
 
         }
 
-        conn.ensure_close();
         m_on_buffer_has_data.notify_one();
         read_finish = true;
         read_finish_event.notify_one();
     }
 
+
+    // repeat send until all are sent
+    static Task<size_t> send_all(IoContext &ctx, Connection &conn, Buffer buffer) {
+        size_t total_sent = 0;
+        for (;;)
+        {
+            auto nsent = 0;
+            if(conn.is_closed() || conn.is_send_shutdown())
+                break;
+            nsent = co_await conn.async_send(buffer);
+            if (nsent == 0)
+            {
+                printf("send peer shutdown\n");
+                break;
+            }
+            total_sent += nsent;
+            buffer = buffer.sub_buffer(nsent);
+            if(!buffer.size())
+            {
+                break;
+            }
+        }
+        co_return total_sent;
+    }
+
     Task<> send(IoContext &ctx)
     {
-
-        bool run = true;
-        for (;run;)
+        for (;;)
         {
 
             LB *b = nullptr;
@@ -115,7 +139,7 @@ struct Session
             // wait for data to send
             for (;;)
             {
-                if(!conn.is_connected()) {  
+                if(conn.is_closed() || conn.is_send_shutdown()) {  
                     break;
                 }                
                 auto node = m_que.pop();
@@ -129,37 +153,26 @@ struct Session
             if(!b)
                 break;
 
-            // repeat send until all are sent
-            Buffer buffer = b->buffer;
-            for (;;)
-            {
-                if(!conn.is_connected())
-                    break;
-                std::size_t nsent;
-                try {
-                    nsent = co_await conn.async_send(buffer);
-                } catch(...) {     
-                    printf("send exception: %s", to_string(std::current_exception()).c_str());
-                    run = false;
-                    break;             
-                }
-                if (nsent == 0)
-                {
-                    printf("send peer shutdown\n");
-                    run = false;
-                    break;
-                }
-                buffer = buffer.sub_buffer(nsent);
-                nwrite_total += nsent;
-                if(!buffer.size())
-                {
-                    break;
-                }
+            if(conn.is_closed() || conn.is_send_shutdown())
+                break;
+
+            size_t nsent;
+
+            try {
+                nsent = co_await send_all(ctx, conn, b->buffer);
+            } catch(...) {     
+                printf("send exception: %s", to_string(std::current_exception()).c_str());
+                break;             
             }
+            nwrite_total += nsent;
             deallocate(m_pool, b);
+            if (nsent < b->buffer.size())
+            {
+                printf("send peer shutdown\n");
+                break;
+            }
         }
 
-        conn.ensure_close();
         send_finish = true;
         send_finish_event.notify_one();
     }

@@ -22,16 +22,28 @@ struct Server
 
 	Task<> start(IoContext &ctx, Session s)
 	{
-		co_spawn(s.read(ctx));
-		co_await s.send(ctx);
 
-		// read join
+		co_spawn(s.send(ctx));
+
+		co_await s.read(ctx);
+
 		for(;!s.read_finish;) {
 			co_await s.read_finish_event;
 		}
+		
+		// --- recv FIN
+
+		// send FIN
+		s.conn.ensure_close();
+
+		// await all send abort	
+		for(;!s.send_finish;) {
+			co_await s.send_finish_event;
+		}
 
 		--nc;
-		printf("[%d] %d conn\n", m_id, nc.load());
+		printf("%d conn\n", nc.load());
+
 	}
 
 	Task<> listen(IoContext &ctx)
@@ -79,7 +91,7 @@ int main()
 
 	printf("hardware_concurrency %d\n", (int)std::thread::hardware_concurrency());
 	std::vector<Server> servers;
-	int n = 1;
+	int n = 2;
 	for(int i = 0; i < n; ++i) {
 		servers.push_back(Server(i, acceptor));
 	}

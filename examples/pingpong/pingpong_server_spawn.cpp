@@ -45,7 +45,7 @@ Task<> echo(IoContext &ctx, Connection c)
 	++nc;
 	printf("%d conn\n", nc);
 	int nsending = 0;
-	Event evt(ctx);
+	Event sending_evt(ctx);
 
 	for(;;) {
 
@@ -55,6 +55,8 @@ Task<> echo(IoContext &ctx, Connection c)
 		try {
 			auto nread = co_await c.async_read(lb->buffer);
 			if(!nread) {
+				// send FIN
+				c.ensure_send_shutdown();
 				break;
 			}
 			lb->buffer = lb->buffer.sub_buffer(0, nread);
@@ -63,14 +65,15 @@ Task<> echo(IoContext &ctx, Connection c)
 		}
 
 		++nsending;
-		co_spawn(send(ctx, c, lb, nsending, evt));
+		co_spawn(send(ctx, c, lb, nsending, sending_evt));
 	}
 
+
+	if(nsending) {
+		co_await sending_evt;
+	}
 
 	c.ensure_close();
-	if(nsending) {
-		co_await evt;
-	}
 
 	--nc;
 	printf("%d conn\n", nc);

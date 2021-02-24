@@ -451,6 +451,11 @@ namespace tinyasync {
             return m_send_shutdown;
         }
 
+        bool is_recv_send_shutdown() const
+        {
+            return m_recv_shutdown && m_send_shutdown;
+        }
+
         void ensure_recv_shutdown()
         {
             if(!is_recv_shutdown()) {
@@ -685,7 +690,7 @@ namespace tinyasync {
     {
         auto conn = m_conn;
         if(!conn->native_handle() || conn->is_recv_shutdown())
-        {
+        {            
             m_bytes_transfer = k_closed_socket_ready;
             return true;
         }
@@ -940,9 +945,39 @@ namespace tinyasync {
             }
         }
 
-        bool is_connected() {
+        bool is_closed() {
             auto impl = m_impl.get();
-            return impl->m_conn_handle;
+            return !impl->m_conn_handle;
+        }
+
+        bool is_recv_shutdown() {
+            auto impl = m_impl.get();
+            return impl->is_recv_shutdown();
+        }
+        
+        bool is_send_shutdown() {
+            auto impl = m_impl.get();
+            return impl->is_send_shutdown();
+        }
+
+        bool is_recv_send_shutdown() {
+            auto impl = m_impl.get();
+            return impl->is_recv_send_shutdown();
+        }
+
+        void shutdown_recv() {
+            auto impl = m_impl.get();
+            impl->shutdown_recv();
+        }
+
+        void shutdown_send() {
+            auto impl = m_impl.get();
+            impl->shutdown_send();
+        }
+
+        void shutdown_recv_send() {
+            auto impl = m_impl.get();
+            impl->shutdown_send();
         }
 
         void ensure_recv_shutdown() {

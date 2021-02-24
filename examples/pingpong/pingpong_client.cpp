@@ -19,14 +19,7 @@ Task<> start(IoContext &ctx, Session &s)
 
 	co_spawn(s.read(ctx));
 	co_await s.send(ctx);
-
-    // read join
-	for(;!s.read_finish;) {
-		co_await s.read_finish_event;
-	}
     
-    --nc;
-	printf("%d conn\n", nc);
     deallocate(&pool, lb);
 }
 
@@ -48,8 +41,19 @@ Task<> connect_(IoContext &ctx)
     co_await async_sleep(ctx, timeout);
 
 	for (size_t i = 0; i <  nsess; ++i) {
+        // send FIN
         sesses[i].conn.ensure_send_shutdown();
+    }
+
+	for (size_t i = 0; i <  nsess; ++i) {
+        // until recv FIN
+        for(;!sesses[i].read_finish;) {
+            co_await sesses[i].read_finish_event;
+        }
         sesses[i].conn.ensure_close();
+        --nc;
+        printf("%d conn\n", nc);
+
     }
 
     printf("%d connection\n", (int)nsess);
@@ -57,8 +61,7 @@ Task<> connect_(IoContext &ctx)
     printf("%.2f M/s bytes read\n", (long long)nread_total/timeout.count()/1E6);
     printf("%.2f M/s bytes write\n", (long long)nwrite_total/timeout.count()/1E6);
 
-    co_await async_sleep(ctx, std::chrono::seconds(10));
-    printf("sleep done\n");
+    co_await async_sleep(ctx, std::chrono::seconds(1));
     ctx.request_abort();
 }
 

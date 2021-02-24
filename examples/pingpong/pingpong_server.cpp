@@ -6,12 +6,22 @@ Pool pool;
 
 Task<> start(IoContext &ctx, Session s)
 {
-	co_spawn(s.read(ctx));
-	co_await s.send(ctx);
+	co_spawn(s.send(ctx));
 
-	// read join
+	co_await s.read(ctx);
+
 	for(;!s.read_finish;) {
 		co_await s.read_finish_event;
+	}
+	
+	// --- recv FIN
+
+	// send FIN
+	s.conn.ensure_close();
+
+	// await all send abort	
+	for(;!s.send_finish;) {
+		co_await s.send_finish_event;
 	}
 
 	--nc;
@@ -25,8 +35,8 @@ Task<> listen(IoContext &ctx)
 	for (;;) {
 		Connection conn = co_await acceptor.async_accept();
 		++nc;
-		co_spawn(start(ctx, Session(ctx, std::move(conn), &pool)));
 		printf("%d conn\n", nc);
+		co_spawn(start(ctx, Session(ctx, std::move(conn), &pool)));
 	}
 
 }
