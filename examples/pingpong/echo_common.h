@@ -71,6 +71,7 @@ struct Session
 
     Task<> read(IoContext &ctx)
     {
+    
         for (; ;)
         {
 
@@ -80,12 +81,12 @@ struct Session
             try {
                 nread = co_await conn.async_read(b->buffer);
             } catch(...) {
-                //printf("read exception: %s\n", to_string(std::current_exception()).c_str());
+                printf("read exception: %s", to_string(std::current_exception()).c_str());
                 break;
             }
             if (nread == 0)
             {
-                //printf("peer shutdown\n");
+                printf("read peer shutdown\n");
                 break;
             }
             nread_total += nread;
@@ -105,7 +106,8 @@ struct Session
     Task<> send(IoContext &ctx)
     {
 
-        for (; ;)
+        bool run = true;
+        for (;run;)
         {
 
             LB *b = nullptr;
@@ -137,12 +139,14 @@ struct Session
                 try {
                     nsent = co_await conn.async_send(buffer);
                 } catch(...) {     
-                    //printf("send exception: %s\n", to_string(std::current_exception()).c_str());
+                    printf("send exception: %s", to_string(std::current_exception()).c_str());
+                    run = false;
                     break;             
                 }
                 if (nsent == 0)
                 {
-                    //printf("peer shutdown\n");
+                    printf("send peer shutdown\n");
+                    run = false;
                     break;
                 }
                 buffer = buffer.sub_buffer(nsent);

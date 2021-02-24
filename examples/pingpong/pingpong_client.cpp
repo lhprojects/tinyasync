@@ -48,11 +48,8 @@ Task<> connect_(IoContext &ctx)
     co_await async_sleep(ctx, timeout);
 
 	for (size_t i = 0; i <  nsess; ++i) {
-        if(::shutdown(sesses[i].conn.native_handle(), SHUT_RDWR) < 0) {
-            printf("shutdown error %d\n", errno);
-            exit(1);
-        }
-        sesses[i].conn.close();
+        sesses[i].conn.ensure_send_shutdown();
+        sesses[i].conn.ensure_close();
     }
 
     printf("%d connection\n", (int)nsess);
@@ -60,7 +57,8 @@ Task<> connect_(IoContext &ctx)
     printf("%.2f M/s bytes read\n", (long long)nread_total/timeout.count()/1E6);
     printf("%.2f M/s bytes write\n", (long long)nwrite_total/timeout.count()/1E6);
 
-    co_await async_sleep(ctx, std::chrono::seconds(1));
+    co_await async_sleep(ctx, std::chrono::seconds(10));
+    printf("sleep done\n");
     ctx.request_abort();
 }
 

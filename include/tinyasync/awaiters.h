@@ -247,17 +247,6 @@ namespace tinyasync {
 
     };
 
-    class ConnCallback : public CallbackImplBase
-    {
-    public:
-        ConnImpl* m_conn;
-        ConnCallback(ConnImpl* conn) : CallbackImplBase(this), m_conn(conn)
-        {
-        }
-        void on_callback(IoEvent&);
-
-    };
-
     class ConnImpl
     {
         friend class Connection;
@@ -268,8 +257,8 @@ namespace tinyasync {
 
 
         IoCtxBase* m_ctx;
-        NativeSocket m_conn_handle;
-        ConnCallback m_callback{ this };
+        NativeSocket m_conn_handle;        
+        Callback m_callback;
         AsyncReceiveAwaiter* m_recv_awaiter = nullptr;
         AsyncSendAwaiter* m_send_awaiter = nullptr;
         PostTask m_post_task;
@@ -279,6 +268,8 @@ namespace tinyasync {
         int m_ref_cnt = 2;
         bool m_added_to_event_pool = false;
 
+        bool m_recv_shutdown = false;
+        bool m_send_shutdown = false;
         bool m_ready_to_send = true;
         bool m_ready_to_recv = true;
 
@@ -336,6 +327,9 @@ namespace tinyasync {
             }
         }
 
+        static void on_callback(Callback *callback, IoEvent &evt);
+
+
         ConnImpl(IoCtxBase &ctx, NativeSocket conn_sock, bool added_event_poll)
         {
             TINYASYNC_GUARD("Connection.Connection(): ");
@@ -343,6 +337,7 @@ namespace tinyasync {
 
             m_ctx = &ctx;
             m_conn_handle = conn_sock;
+            m_callback.m_callback = on_callback;
 
 
             auto m_conn = this;
@@ -418,29 +413,95 @@ namespace tinyasync {
         }
 
 
+        bool is_recv_shutdown() const
+        {
+            return m_recv_shutdown;
+        }
+
+        bool is_send_shutdown() const
+        {
+            return m_send_shutdown;
+        }
+
+        void ensure_recv_shutdown()
+        {
+            if(!is_recv_shutdown()) {
+                shutdown_recv();
+            }
+        }
+
+        void ensure_send_shutdown()
+        {
+            if(!is_send_shutdown()) {
+                shutdown_send();
+            }
+        }
+
+        void ensure_recv_send_shutdown()
+        {
+            ensure_recv_shutdown();
+            ensure_send_shutdown();
+        }
+
+        void shutdown_recv()
+        {
+            TINYASYNC_ASSERT(m_conn_handle);
+            TINYASYNC_ASSERT(!m_recv_shutdown);
+            auto conn_handle = m_conn_handle;
+            ::shutdown(conn_handle, SHUT_RD);            
+            m_recv_shutdown = true;
+        }
+
+        void shutdown_send()
+        {
+            TINYASYNC_ASSERT(m_conn_handle);
+            TINYASYNC_ASSERT(!m_recv_shutdown);
+            auto conn_handle = m_conn_handle;
+            ::shutdown(conn_handle, SHUT_WR);            
+            m_send_shutdown = true;
+        }
+
+        void shutdown_recv_send()
+        {
+            TINYASYNC_ASSERT(m_conn_handle);
+            TINYASYNC_ASSERT(!m_recv_shutdown);
+            TINYASYNC_ASSERT(!m_send_shutdown);
+            auto conn_handle = m_conn_handle;
+            ::shutdown(conn_handle, SHUT_RDWR);            
+            m_send_shutdown = true;
+            m_recv_shutdown = true;
+        }
+
+        void ensure_close() {
+            auto conn_handle = m_conn_handle;
+            if(conn_handle != NULL_SOCKET) {
+                this->close();
+            }
+        }
+
         void close()
         {
             TINYASYNC_GUARD("Connection:close(): ");
             auto conn_handle = m_conn_handle;
-            if(conn_handle != NULL_SOCKET)
-            {
-                if(close_socket(conn_handle) < 0) {
-                    TINYASYNC_LOG("close error");
-                    throw_errno("close error");
-                }
-                m_conn_handle = NULL_SOCKET;
-                m_added_to_event_pool = false;
 
-                // post tasks at the end of queue
-                // wakeup all awaiters
-                // remain epoll_event should happen before this task
-                // callback will not response to these epoll_event
-                // after we finish the task
-                // we should never recv any epoll_event
-                // thus we can delete connection
-                m_post_task.set_callback(wakeup_awaiter_on_close);
-                m_ctx->post_task(&m_post_task);
+            if(close_socket(conn_handle) < 0) {
+                TINYASYNC_LOG("close error");
+                throw_errno("close error");
             }
+            m_conn_handle = NULL_SOCKET;            
+            m_send_shutdown = true;
+            m_recv_shutdown = true;
+            m_added_to_event_pool = false;
+
+            // post tasks at the end of queue
+            // wakeup all awaiters
+            // remain epoll_event should happen before this task
+            // callback will not response to these epoll_event
+            // after we finish the task
+            // we should never recv any epoll_event
+            // thus we can delete connection
+            m_post_task.set_callback(wakeup_awaiter_on_close);
+            m_ctx->post_task(&m_post_task);
 
         }
 
@@ -453,9 +514,11 @@ namespace tinyasync {
 
     };
 
-    void ConnCallback::on_callback(IoEvent& evt)
+    inline void ConnImpl::on_callback(Callback *callback, IoEvent& evt)
     {
         TINYASYNC_GUARD("ConnCallback.callback(): ");
+        ConnImpl* conn = (ConnImpl*)((char*)callback - offsetof(ConnImpl, m_callback));
+        auto conn_handle = conn->m_conn_handle;        
 
 #ifdef _WIN32
 
@@ -477,9 +540,8 @@ namespace tinyasync {
 
 #elif defined(__unix__)
 
-        auto conn = m_conn;
-        auto conn_handle = conn->m_conn_handle;        
-        if(conn_handle == NULL_SOCKET) {
+        if(conn_handle == NULL_SOCKET)
+        {
             // connection have been closed
             // use post task to wakeup awaiters
             return;
@@ -487,16 +549,17 @@ namespace tinyasync {
 
         // now conn must be alive
         // so pre-load them
-        auto recv_awaiter = m_conn->m_recv_awaiter;
-        auto send_awaiter = m_conn->m_send_awaiter;
 
         int events = evt.events;
         if(events & EPOLLIN) {
-            m_conn->m_ready_to_recv = true;
+            conn->m_ready_to_recv = true;
         }
         if(events & EPOLLOUT) {
-            m_conn->m_ready_to_send = true;
+            conn->m_ready_to_send = true;
         }
+
+        auto recv_awaiter = conn->m_recv_awaiter;
+        auto send_awaiter = conn->m_send_awaiter;
 
         if ((events & EPOLLIN) && recv_awaiter) {
             // we want to read and it's ready to read
@@ -514,7 +577,7 @@ namespace tinyasync {
 
                 if(nbytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { 
                     // try again latter ...
-                    m_conn->m_ready_to_recv = false;
+                    conn->m_ready_to_recv = false;
                     break;
                 } else {
                     // may cause self deleted
@@ -523,7 +586,7 @@ namespace tinyasync {
                 }
 
                 if(nbytes < desired_bytes) {
-                    m_conn->m_ready_to_recv = false;
+                    conn->m_ready_to_recv = false;
                     break;
                 }
 
@@ -552,7 +615,7 @@ namespace tinyasync {
 
                 if(nbytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { 
                     // try again latter ...
-                    m_conn->m_ready_to_send = false;
+                    conn->m_ready_to_send = false;
                     break;
                 } else {
                     awaiter->m_bytes_transfer = (std::ptrdiff_t)nbytes;
@@ -560,7 +623,7 @@ namespace tinyasync {
                 }
 
                 if(nbytes < desired_bytes) {
-                    m_conn->m_ready_to_send = false;
+                    conn->m_ready_to_send = false;
                     break;
                 }
 
@@ -569,7 +632,7 @@ namespace tinyasync {
         }
         
         if(!(   events & (EPOLLIN|EPOLLOUT) )) {
-            TINYASYNC_LOG("not processed event for conn_handle %x", errno, m_conn->m_conn_handle);
+            TINYASYNC_LOG("not processed event for conn_handle %x", errno, conn->m_conn_handle);
             fprintf(stderr, "%s\n", ioe2str(evt).c_str());
             exit(1);
         }
@@ -592,7 +655,9 @@ namespace tinyasync {
 
     bool AsyncReceiveAwaiter::await_ready()
     {
-        if(!m_conn->native_handle()) {
+        auto conn = m_conn;
+        if(!conn->native_handle() || conn->is_recv_shutdown())
+        {
             m_bytes_transfer = k_closed_socket_ready;
             return true;
         }
@@ -687,7 +752,7 @@ namespace tinyasync {
         } else {
             if (nbytes == 0) {
                 if (errno == ESHUTDOWN) {
-                    TINYASYNC_LOG("ESHUTDOWN, fd = %d", m_conn->m_conn_handle);
+                    TINYASYNC_LOG("ESHUTDOWN, fd = %d",  m_conn->m_conn_handle);
                 }
             }
             TINYASYNC_LOG("fd = %d, %d bytes read", m_conn->m_conn_handle, nbytes);
@@ -708,7 +773,9 @@ namespace tinyasync {
 
     bool AsyncSendAwaiter::await_ready()
     {
-        if(!m_conn->native_handle()) {
+        auto conn = m_conn;
+        if(!conn->native_handle() || conn->is_send_shutdown())
+        {
             m_bytes_transfer = k_closed_socket_ready;
             return true;
         }
@@ -831,10 +898,10 @@ namespace tinyasync {
 
         ~Connection()
         {
-            auto impl = m_impl.get();
+            auto impl = m_impl.release();
             if(impl) {
-                ensure_close();
-                m_impl.release();
+                impl->ensure_recv_send_shutdown();
+                impl->ensure_close();
                 
                 impl->m_ref_cnt--;
                 if(!impl->m_ref_cnt) {      
@@ -848,6 +915,21 @@ namespace tinyasync {
         bool is_connected() {
             auto impl = m_impl.get();
             return impl->m_conn_handle;
+        }
+
+        void ensure_recv_shutdown() {
+            auto impl = m_impl.get();
+            impl->ensure_recv_shutdown();
+        }
+
+        void ensure_send_shutdown() {
+            auto impl = m_impl.get();
+            impl->ensure_send_shutdown();
+        }
+
+        void ensure_recv_send_shutdown() {
+            auto impl = m_impl.get();
+            impl->ensure_recv_send_shutdown();
         }
 
         NativeSocket native_handle() {
