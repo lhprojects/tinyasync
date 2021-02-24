@@ -22,46 +22,40 @@ namespace tinyasync {
     struct Address
     {
 
-        // ip_v32 host bytes order
-        Address(uint32_t ip_v32)
+        // ip_v32 host byte order
+        Address(uint32_t v32)
         {
-            // set the unused part to zero by the way
-            m_v6 = ip_v32;
+            m_int4 = htonl(v32);
             m_address_type = AddressType::IpV4;
         }
 
-        // ip_v64 host bytes order
-        Address(uint64_t ip_v64)
-        {
-            m_v6 = ip_v64;
-            m_address_type = AddressType::IpV6;
-        }
-
+        // if we bind on this address,
+        // We will listen to all network card(s)
         Address()
         {
-            // if we bind on this address,
-            // We will listen to all network card(s)
-            m_v6 = INADDR_ANY;
+
+            if(INADDR_ANY != 0) {
+                m_int4 = htonl(INADDR_ANY);
+            } else {
+                m_int4 = 0;
+            }
             m_address_type = AddressType::IpV4;
         }
 
         std::string to_string() const
         {
-            if (m_address_type == AddressType::IpV4) {
-                char buf[256];
-
+            char buf[256];
 #if _WIN32
+            //
 #elif defined(__unix__)
-                // host long -> network long -> string
-                // TODO: this is not thread safe
-                in_addr addr;
-                addr.s_addr = htonl(m_v4);
-                inet_ntop(AF_INET, &addr, buf, sizeof(buf));
-#endif
+            if (m_address_type == AddressType::IpV4) {
+                inet_ntop(AF_INET, &m_addr4, buf, sizeof(buf));
                 return buf;
             } else if (m_address_type == AddressType::IpV6) {
-                //TODO: implement
+                inet_ntop(AF_INET6, &m_addr6, buf, sizeof(buf));
+                return buf;
             }
+#endif
             return "";
         }
 
@@ -72,8 +66,10 @@ namespace tinyasync {
 
         union
         {
-            uint32_t m_v4;
-            uint64_t m_v6;
+            uint32_t m_int4;
+            in_addr m_addr4;
+            in6_addr m_addr6;
+
         };
         AddressType m_address_type;
     };
@@ -91,6 +87,9 @@ namespace tinyasync {
         {
         }
 
+        Address address() const {
+            return m_address;
+        }
         Address m_address;
         uint16_t m_port;
     };
@@ -111,6 +110,29 @@ namespace tinyasync {
 #endif
     }
 
+
+    inline Address address_v4_from_string(char const *str)
+    {
+        in_addr addr;        
+        if(inet_pton(AF_INET, str, &addr) < 0) {
+            throw_errno("address_v4_from_string");
+        }
+        Address addr_;
+        addr_.m_addr4 = addr;
+        addr_.m_address_type = AddressType::IpV4;
+        return addr_;
+    }
+    inline Address address_v6_from_string(char const *str)
+    {
+        in6_addr addr;      
+        if(inet_pton(AF_INET6, str, &addr) < 0) {
+            throw_errno("address_v6_from_string");
+        }
+        Address addr_;
+        addr_.m_addr6 = addr;
+        addr_.m_address_type = AddressType::IpV6;
+        return addr_;
+    }
 
     inline NativeSocket open_socket(Protocol const& protocol, bool blocking = false)
     {
@@ -154,18 +176,24 @@ namespace tinyasync {
         TINYASYNC_LOG("socket = %s", socket_c_str(socket));
 
 
-        sockaddr_in serveraddr;
-        // do this! no asking!
-        memset(&serveraddr, 0, sizeof(serveraddr));
-        // AF means address
-        serveraddr.sin_family = AF_INET;
-        // hton*: host bytes order to network bytes order
-        // *l: uint32
-        // *s: uint16
-        serveraddr.sin_port = htons(endpoint.m_port);
-        serveraddr.sin_addr.s_addr = htonl(endpoint.m_address.m_v4);
+        int binderr;
+        if(endpoint.m_address.m_address_type == AddressType::IpV4)
+        {
+            sockaddr_in serveraddr;
+            memset(&serveraddr, 0, sizeof(serveraddr));
+            serveraddr.sin_family = AF_INET;
+            serveraddr.sin_port = htons(endpoint.m_port);
+            serveraddr.sin_addr.s_addr = endpoint.m_address.m_addr4.s_addr;
+            binderr = ::bind(socket, (sockaddr*)&serveraddr, sizeof(serveraddr));
 
-        auto binderr = ::bind(socket, (sockaddr*)&serveraddr, sizeof(serveraddr));
+        } else if(endpoint.m_address.m_address_type == AddressType::IpV6) {
+            sockaddr_in6 serveraddr;
+            memset(&serveraddr, 0, sizeof(serveraddr));
+            serveraddr.sin6_family = AF_INET6;
+            serveraddr.sin6_port = htons(endpoint.m_port);
+            serveraddr.sin6_addr = endpoint.m_address.m_addr6;
+            binderr = ::bind(socket, (sockaddr*)&serveraddr, sizeof(serveraddr));
+        }
 
 #ifdef _WIN32
 
@@ -1181,7 +1209,7 @@ namespace tinyasync {
         void listen()
         {
             TINYASYNC_GUARD("Acceptor.listen(): ");
-            TINYASYNC_LOG("socket = %s, address = %X, port = %d", socket_c_str(m_socket), m_endpoint.m_address.m_v4, m_endpoint.m_port);
+            TINYASYNC_LOG("socket = %s, address = %s, port = %d", socket_c_str(m_socket), m_endpoint.m_address.to_string().c_str(), m_endpoint.m_port);
 
             int max_pendding_connection = 5;
             int err = ::listen(m_socket, max_pendding_connection);
@@ -1384,6 +1412,11 @@ namespace tinyasync {
             return impl->async_accept();
         }
 
+        Endpoint endpoint() {
+            auto impl = m_impl.get();
+            return impl->m_endpoint;
+        }
+
         Acceptor reset_io_context(IoContext &ctx)
         {
             auto r = this->m_impl.get();
@@ -1530,15 +1563,30 @@ namespace tinyasync {
 
             TINYASYNC_GUARD("Connector::connect():");
 
-            sockaddr_in serveraddr;
-            memset(&serveraddr, 0, sizeof(serveraddr));
-            // AF means address
-            serveraddr.sin_family = AF_INET;
-            // hton*: host bytes order to network bytes order
-            // *l: uint32
-            // *s: uint16
-            serveraddr.sin_port = htons(endpoint.m_port);
-            serveraddr.sin_addr.s_addr = htonl(endpoint.m_address.m_v4);
+            auto connfd = m_socket;
+
+            int connerr;
+            if(endpoint.m_address.m_address_type == AddressType::IpV4) {
+
+                sockaddr_in serveraddr;
+                memset(&serveraddr, 0, sizeof(serveraddr));
+                serveraddr.sin_family = AF_INET;
+                serveraddr.sin_port = htons(endpoint.m_port);
+                serveraddr.sin_addr = endpoint.m_address.m_addr4;
+                NativeSocket connfd = m_socket;
+                connerr = ::connect(connfd, (sockaddr*)&serveraddr, sizeof(serveraddr));
+
+            } else if(endpoint.m_address.m_address_type == AddressType::IpV6) {
+
+                sockaddr_in6 serveraddr;
+                memset(&serveraddr, 0, sizeof(serveraddr));
+                serveraddr.sin6_family = AF_INET6;
+                serveraddr.sin6_port = htons(endpoint.m_port);
+                serveraddr.sin6_addr = endpoint.m_address.m_addr6;
+                NativeSocket connfd = m_socket;
+                connerr = ::connect(connfd, (sockaddr*)&serveraddr, sizeof(serveraddr));
+            }
+
 
             bool connected = false;
 
@@ -1597,8 +1645,6 @@ namespace tinyasync {
             }
 
 #elif defined(__unix__)
-            NativeSocket connfd = m_socket;
-            auto connerr = ::connect(connfd, (sockaddr*)&serveraddr, sizeof(serveraddr));
             if (connerr == -1) {
                 if (errno == EINPROGRESS) {
                     TINYASYNC_LOG("EINPROGRESS, conn_handle = %X", connfd);
