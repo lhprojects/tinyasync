@@ -155,8 +155,8 @@ namespace tinyasync
 
     public:
 
-        template <bool multiple_thread = false>
-        IoContext(std::integral_constant<bool, multiple_thread> = std::false_type());
+        template <bool multiple_thread = true>
+        IoContext(std::integral_constant<bool, multiple_thread> = std::true_type());
 
         IoCtxBase *get_io_ctx_base() {
             return m_ctx.get();
@@ -229,6 +229,7 @@ namespace tinyasync
         bool m_abort_requested = false;
         static const bool k_multiple_thread = CtxTrait::multiple_thread;
 
+        void wakeup_a_thread();
     public:
         IoCtx();
         void post_task(PostTask *callback) override;
@@ -284,6 +285,7 @@ namespace tinyasync
             throw_errno("IoContext().IoContext(): can't create epoll");
         }
         m_epoll_handle = fd;
+        TINYASYNC_LOG("event poll created %s", handle_c_str(m_epoll_handle));
 
         fd = eventfd(1, EFD_NONBLOCK);
         if (fd == -1)
@@ -291,9 +293,19 @@ namespace tinyasync
             throw_errno("IoContext().IoContext(): can't create eventfd");
         }
         m_wakeup_handle = fd;
+        TINYASYNC_LOG("wakeup handle created %s", handle_c_str(m_wakeup_handle));
+
+        epoll_event evt;
+        evt.data.ptr = (void *)1;
+        evt.events = EPOLLIN | EPOLLONESHOT;
+        if(epoll_ctl(m_epoll_handle, EPOLL_CTL_ADD, m_wakeup_handle, &evt) < 0) {
+            std::string err =  format("can't set wakeup event %s (epoll %s)", handle_c_str(m_wakeup_handle), handle_c_str(m_epoll_handle));
+            TINYASYNC_LOG(err.c_str());
+            throw_errno(err);
+        }
+
 
 #endif
-        TINYASYNC_LOG("event poll created");
     }
 
     template <class T>
@@ -314,9 +326,25 @@ namespace tinyasync
     }
 
     template <class T>
+    void IoCtx<T>::wakeup_a_thread()
+    {
+        epoll_event evt;
+        evt.data.ptr = (void *)1;
+        evt.events = EPOLLIN | EPOLLONESHOT;
+        if(epoll_ctl(m_epoll_handle, EPOLL_CTL_MOD, m_wakeup_handle, &evt) < 0) {
+            std::string err =  format("can't set wakeup event %s (epoll %s)", handle_c_str(m_wakeup_handle), handle_c_str(m_epoll_handle));
+            TINYASYNC_LOG(err.c_str());
+            throw_errno(err);
+        }
+
+    }
+
+
+    template <class T>
     void IoCtx<T>::post_task(PostTask *task)
     {
 
+        TINYASYNC_GUARD("post_task(): ");
         if constexpr (k_multiple_thread)
         {
             m_que_lock.lock();
@@ -325,12 +353,11 @@ namespace tinyasync
             auto thread_wating = m_thread_waiting;
             m_que_lock.unlock();
 
+            TINYASYNC_LOG(" ");
             if (thread_wating > 0)
             {
-                epoll_event evt;
-                evt.data.ptr = (void *)1;
-                evt.events = EPOLLIN | EPOLLONESHOT;
-                epoll_ctl(m_epoll_handle, EPOLL_CTL_MOD, m_wakeup_handle, &evt);
+                TINYASYNC_LOG("has thread waiting event %s (epoll %s)", handle_c_str(m_wakeup_handle), handle_c_str(m_epoll_handle));
+                wakeup_a_thread();
             }
         }
         else
@@ -342,9 +369,17 @@ namespace tinyasync
     template <class T>
     void IoCtx<T>::request_abort()
     {
-        m_que_lock.lock();
-        m_abort_requested = true;
-        m_que_lock.unlock();
+        if constexpr(k_multiple_thread) {
+            m_que_lock.lock();
+            m_abort_requested = true;
+            auto thread_waiting = m_thread_waiting;
+            m_que_lock.unlock();
+            if(thread_waiting) {
+                wakeup_a_thread();
+            }
+        } else {
+            m_abort_requested = true;
+        }
     }
 
     template <class T>
@@ -363,8 +398,7 @@ namespace tinyasync
             {
                 m_que_lock.lock();
             }
-            bool empty__;
-            auto node = m_task_queue.pop(empty__);
+            auto node = m_task_queue.pop();
             bool abort_requested = m_abort_requested;
 
             if (abort_requested)
@@ -409,7 +443,6 @@ namespace tinyasync
                     m_que_lock.unlock();
                 }
 
-                TINYASYNC_LOG("waiting event ...");
 
 #ifdef _WIN32
 
@@ -433,7 +466,9 @@ namespace tinyasync
                 const auto epfd = this->event_poll_handle();
                 int const timeout = -1; // indefinitely
 
+                TINYASYNC_LOG("waiting event ... handle = %s\n", handle_c_str(epfd));
                 int nfds = epoll_wait(epfd, (epoll_event *)events, maxevents, timeout);
+                TINYASYNC_LOG("epoll wakeup %s\n", handle_c_str(epfd));
 
                 if constexpr (k_multiple_thread)
                 {
@@ -441,6 +476,7 @@ namespace tinyasync
                     m_thread_waiting -= 1;
                     const auto task_queue_size = m_task_queue_size;
                     m_que_lock.unlock();
+                    TINYASYNC_LOG("task_queue_size %d\n", task_queue_size);
 
                     if (nfds == -1)
                     {
@@ -492,15 +528,17 @@ namespace tinyasync
                         }
                     }
 
-                    if (wakeup_event && m_thread_waiting && (task_queue_size + effective_event > 1))
-                    {
-                        // this is an wakeup event
-                        // it means we may need to wakeup thread
-                        // this is thread is to deal with effective_event
-                        epoll_event evt;
-                        evt.data.ptr = (void *)1;
-                        evt.events = EPOLLIN | EPOLLONESHOT;
-                        epoll_ctl(m_epoll_handle, EPOLL_CTL_MOD, m_wakeup_handle, &evt);
+                    if(m_thread_waiting) {
+                        if(m_abort_requested) {
+                            wakeup_a_thread();
+
+                        } else if(wakeup_event && (task_queue_size + effective_event > 1)) {
+                            // this is an wakeup event
+                            // it means we may need to wakeup thread
+                            // this is thread is to deal with effective_event
+                            wakeup_a_thread();
+                        }
+
                     }
                 }
 

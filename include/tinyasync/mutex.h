@@ -254,6 +254,7 @@ namespace tinyasync
     public:
         ListNode m_node;
         Mutex *m_mutex;
+        IoCtxBase *m_ctx;
         std::coroutine_handle<TaskPromiseBase> m_suspended_coroutine = nullptr;
         PostTask m_posttask;
 
@@ -274,7 +275,7 @@ namespace tinyasync
             return await_suspend(suspended_coroutine_base);
         }
 
-        MutexLockAwaiter(Mutex &mutex);
+        MutexLockAwaiter(Mutex &mutex, IoCtxBase &ctx);
         bool await_ready() noexcept;
         bool await_suspend(std::coroutine_handle<TaskPromiseBase> suspend_coroutine);
         void await_resume();
@@ -284,15 +285,11 @@ namespace tinyasync
     {
     public:
         LockCore m_lockcore;
-        IoContext *m_ctx;
 
-        Mutex(IoContext &ctx) {
-            m_ctx = &ctx;
-        }
 
-        MutexLockAwaiter lock()
+        MutexLockAwaiter lock(IoContext &ctx)
         {
-            return {*this};
+            return {*this, *ctx.get_io_ctx_base()};
         }
 
         bool is_locked()
@@ -348,7 +345,7 @@ namespace tinyasync
         TINYASYNC_ASSERT(m_mutex->is_locked());
     }
 
-    inline MutexLockAwaiter::MutexLockAwaiter(Mutex &mutex) : m_mutex(&mutex)
+    inline MutexLockAwaiter::MutexLockAwaiter(Mutex &mutex, IoCtxBase &ctx) : m_mutex(&mutex), m_ctx(&ctx)
     {            
     }
 
@@ -364,8 +361,8 @@ namespace tinyasync
             // pop from mutex list
             MutexLockAwaiter *awaiter = MutexLockAwaiter::from_node(node);            
             // insert into ctx's task list
-            awaiter->m_posttask.set_callback(MutexLockAwaiter::on_callback);
-            m_ctx->post_task(&awaiter->m_posttask);
+            awaiter->m_posttask.set_callback(MutexLockAwaiter::on_callback);  
+            awaiter->m_ctx->post_task(&awaiter->m_posttask);
         }
         else
         {
@@ -677,11 +674,11 @@ namespace tinyasync
         using mutex_type = typename Trait::spinlock_type;
         Queue m_awaiter_que;
         mutex_type m_native_mutex;
-        IoContext *m_ctx = nullptr;
+        IoCtxBase *m_ctx = nullptr;
 
         Condv(IoContext &ctx)
         {
-            m_ctx = &ctx;
+            m_ctx = ctx.get_io_ctx_base();
         }
 
 
@@ -699,14 +696,18 @@ namespace tinyasync
             auto posttask = new PostTaskEvent();
 
             m_native_mutex.lock();
-            bool empty__ = false;            
-            auto awaiter = this->m_awaiter_que.pop(empty__);
+            auto awaiter = this->m_awaiter_que.pop();
             m_native_mutex.unlock();
 
-            awaiter->m_next = nullptr;
-            posttask->m_awaiters = awaiter;
-            posttask->set_callback(on_notify);
-            m_ctx->post_task(posttask);
+            if(awaiter) {
+                TINYASYNC_LOG("has awaiter");
+                awaiter->m_next = nullptr;
+                posttask->m_awaiters = awaiter;
+                posttask->set_callback(on_notify);
+                m_ctx->post_task(posttask);
+            } else {
+                TINYASYNC_LOG("no awaiter");
+            }
             
 
         }
@@ -719,13 +720,17 @@ namespace tinyasync
             auto posttask = new PostTaskEvent();
 
             m_native_mutex.lock();
-            posttask->m_awaiters = this->m_awaiter_que.m_before_head.m_next;
+            auto awaiter = this->m_awaiter_que.m_before_head.m_next;
             this->m_awaiter_que.m_before_head.m_next = nullptr;
             this->m_awaiter_que.m_tail = nullptr;
             m_native_mutex.unlock();
 
-            posttask->set_callback(on_notify);
-            m_ctx->post_task(posttask);
+            if(awaiter) {
+                posttask->m_awaiters = awaiter;
+                posttask->set_callback(on_notify);
+                m_ctx->post_task(posttask);
+            }
+
             
         }
 
@@ -748,7 +753,7 @@ namespace tinyasync
             return (CondvAwaiter*)((char*)node - offsetof(CondvAwaiter<Condv>,m_node));
         }
 
-        CondvAwaiter(Condv &evt, Mutex &mtx) : m_mutex_lock_awaiter(mtx)
+        CondvAwaiter(Condv &evt, Mutex &mtx) : m_mutex_lock_awaiter(mtx, *evt.m_ctx)
         {
             m_condv = &evt;
             m_mtx = &mtx;

@@ -100,15 +100,16 @@ namespace tinyasync {
     template<class Result>
     class PromiseResultMixin  {
     public:
-        union {
-            Result m_result;
-        };
+        Result m_result;
+
+        PromiseResultMixin() = default;
         
         template<class T>
-        void return_value(T  &&value)
+        void return_value(T &&value)
         {
-            new(&m_result) Result(std::forward<T>(value));
+            m_result = std::forward<T>(value);
         }
+        
     };
 
     template<>

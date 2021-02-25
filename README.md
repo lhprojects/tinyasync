@@ -27,6 +27,22 @@ This is a header library. You needn't to build the library itself. Just adding t
 #include <tinyasync/tinyasync.h>
 ```
 
+## Introduction
+
+### IoContext
+```c++
+// multiple thread io contex, by default
+IoContext ctx(std::true_type{});
+// single thread io context
+IoContext ctx(std::false_type{});
+```
+
+Note:
+* You don't have to link with e.g. pthread if you are using single thread version.
+* Performance is tittle different. Always recommend you to use multiple thread version.
+You can't persist in using single thread from beginning to the end in any real world application.
+
+
 ## Examples
 
 See [README.md](./examples/README.md) .
@@ -41,6 +57,7 @@ You need to include tinyasync as following:
 #include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/buffer.h>
 #include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/awaiters.h>
 #include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/mutex.h>
+#include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/dns_resolver.h>
 <your code>
 ```
 

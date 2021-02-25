@@ -6,7 +6,7 @@ using namespace tinyasync;
 
 int max_que_size=2;
 IoContext ctx;
-Mutex mtx(ctx);
+Mutex mtx;
 ConditionVariable producer(ctx);
 ConditionVariable consumer(ctx);
 
@@ -24,7 +24,7 @@ Task<> sche(Name = "sche")
 
     co_await async_sleep(ctx, std::chrono::seconds(10));
 
-    co_await mtx.lock();
+    co_await mtx.lock(ctx);
     timeout = true;
     mtx.unlock();
 
@@ -50,7 +50,7 @@ Task<> produce(Name = "producer")
 
         //co_await async_sleep(ctx, std::chrono::milliseconds(500));
 
-        co_await mtx.lock();
+        co_await mtx.lock(ctx);
         auto mtx_ = auto_unlock(mtx);
 
         for(;!(que.size() < max_que_size) && !timeout;) {
@@ -67,7 +67,7 @@ Task<> produce(Name = "producer")
         }
     }
 
-    co_await mtx.lock();
+    co_await mtx.lock(ctx);
     producer_done = true;
     mtx.unlock();
     producer_done_event.notify_all();
@@ -79,7 +79,7 @@ Task<> consume(Name = "consumer") {
 
     for(int i = 0; ; ++i) {
 
-        co_await mtx.lock();
+        co_await mtx.lock(ctx);
         auto mtx_ = auto_unlock(mtx);
 
         for(;!(que.size() > 0) && !timeout;) {
@@ -110,7 +110,7 @@ Task<> consume(Name = "consumer") {
 
     }
 
-    co_await mtx.lock();
+    co_await mtx.lock(ctx);
     consumer_done = true;
     mtx.unlock();
     consumer_done_event.notify_all();

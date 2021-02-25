@@ -78,13 +78,13 @@ public:
     std::list<Part> m_clients;
     Mutex m_mtx;
 
-    ChatRoomServer() : m_mtx(m_ctx_) {
+    ChatRoomServer()  {
 
     }
 
     Task<> broadcast(Part *client, std::string const &msg)
     {
-        co_await m_mtx.lock();
+        co_await m_mtx.lock(*m_ctx);
         auto m_mtx_ = auto_unlock(m_mtx);
 
         for(auto &c: m_clients) {
@@ -97,7 +97,7 @@ public:
 
     Task<> on_join(Connection conn_)
     {
-        co_await m_mtx.lock();
+        co_await m_mtx.lock(*m_ctx);
         auto m_mtx_ = auto_unlock(m_mtx);
 
         m_clients.emplace_back(*this, std::move(conn_));
@@ -112,7 +112,7 @@ public:
 
     Task<> on_leave(Part *part)
     {
-        co_await m_mtx.lock();
+        co_await m_mtx.lock(*m_ctx);
         auto m_mtx_ = auto_unlock(m_mtx);
 
         m_clients.remove(*part);
@@ -139,9 +139,9 @@ public:
 
 Part::Part(ChatRoomServer &server, Connection conn) :
     m_chatroom(&server),
-    m_msg_mtx(*server.m_ctx),
+    m_msg_mtx(),
     m_msg_condv(*server.m_ctx),
-    m_conn_mtx(*server.m_ctx),
+    m_conn_mtx(),
     m_conn(std::move(conn)) {        
     m_id = get_id();
     m_name = tinyasync::format("<%d>", (int)m_id);
@@ -186,7 +186,7 @@ Task<> Part::listen() {
 Task<> Part::send() {
     for(;;)
     {
-        co_await m_msg_mtx.lock();
+        co_await m_msg_mtx.lock(*(this->m_chatroom->m_ctx));
         for(;!m_messages.size();) {                
             printf("waiting..\n");
             co_await m_msg_condv.wait(m_msg_mtx);

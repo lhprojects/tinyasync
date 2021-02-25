@@ -7,5 +7,6 @@
 #include "buffer.h"
 #include "awaiters.h"
 #include "mutex.h"
+#include "dns_resolver.h"
 
 #endif // TINYASYNC_H

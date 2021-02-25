@@ -19,6 +19,7 @@ set(HEADER_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/tinyasync/io_context.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/tinyasync/awaiters.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/tinyasync/mutex.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include/tinyasync/dns_resolver.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/tinyasync/tinyasync.h
 )
 
@@ -27,6 +28,7 @@ add_subdirectory("bench_task")
 add_subdirectory("chatroom_server")
 add_subdirectory("condition_variable")
 add_subdirectory("coroutine_task")
+add_subdirectory("dns_resolver")
 add_subdirectory("echo_server")
 add_subdirectory("http_client")
 add_subdirectory("http_helloworld_server")

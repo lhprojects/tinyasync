@@ -7,7 +7,7 @@ using namespace tinyasync;
 Task<> task(IoContext &ctx, Mutex &mutex, int id, int &cnt, Name) {
 
     printf("task %d locking\n", id);
-    co_await mutex.lock();
+    co_await mutex.lock(ctx);
     printf("task %d locked\n", id);
 
     printf("task %d sleeping\n", id);
@@ -26,7 +26,7 @@ Task<> task(IoContext &ctx, Mutex &mutex, int id, int &cnt, Name) {
 int main() {
 
     IoContext ctx;
-    Mutex mtx(ctx);
+    Mutex mtx;
     int cnt = 2;
 
     co_spawn(task(ctx, mtx, 0, cnt, "t1"));

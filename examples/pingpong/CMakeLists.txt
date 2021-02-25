@@ -6,4 +6,7 @@ add_executable(pingpong_server_mult "pingpong_server_mult.cpp")
 add_executable(pingpong_server_spawn "pingpong_server_spawn.cpp")
 
 target_link_libraries(pingpong_server_mult PRIVATE Threads::Threads)
+target_link_libraries(pingpong_client PRIVATE Threads::Threads)
+target_link_libraries(pingpong_server PRIVATE Threads::Threads)
+target_link_libraries(pingpong_server_spawn PRIVATE Threads::Threads)
 
