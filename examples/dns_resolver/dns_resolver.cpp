@@ -6,15 +6,9 @@
 
 using namespace tinyasync;
 
-Task<DsnResult> dns2(IoContext &ctx, char const *str)
-{
-    DsnResult res = co_await dns_resolver().resolve(ctx, str);
-    co_return res;
-}
-
 Task<DsnResult> dns1(IoContext &ctx, char const *str)
 {
-    DsnResult res = co_await dns2(ctx, str);
+    DsnResult res = co_await dns_resolver().resolve(ctx, str);
     co_return res;
 }
 

@@ -5,6 +5,8 @@
 
 namespace tinyasync
 {
+    class DnsResolver;
+
     struct DsnResult
     {
         int errc() const
@@ -21,34 +23,74 @@ namespace tinyasync
         Address m_address;
     };
 
-    struct DnsRequest : ListNode
+
+    struct DnsResolverAwaiter : ListNode
     {
-        DnsRequest(IoContext &ctx, char const *name) : m_condv(ctx)
-        {
-            m_name = name;
+        DnsResolver *m_dns_resolver;
+        IoCtxBase *m_ctx;
+        DsnResult m_result;
+        std::coroutine_handle<TaskPromiseBase> m_suspend_coroutine;
+        char const *m_name;
+        PostTask m_remote_task;     
+        PostTask m_local_task;
+
+        DnsResolverAwaiter(DnsResolver &resolver, IoCtxBase &ctx, char const *name) {
+            m_ctx = &ctx;
+            m_dns_resolver = &resolver;
+            m_remote_task.set_callback(do_remote_task);
+            m_local_task.set_callback(do_local_task);         
+            m_name = name;   
         }
 
-        ConditionVariable m_condv;
-        DsnResult m_result;
-        bool m_done = false;
-        char const *m_name;
+
+        static void do_remote_task(PostTask *posttask);
+
+        // resolve done
+        // resume our coroutine
+        static void do_local_task(PostTask *posttask)
+        {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+            auto awaiter = (DnsResolverAwaiter*)((char*)posttask - offsetof(DnsResolverAwaiter, m_local_task));
+#pragma GCC diagnostic pop
+
+            TINYASYNC_RESUME(awaiter->m_suspend_coroutine);            
+        }
+
+        bool await_ready()
+        {
+            return false;
+        }
+
+        template<class P>
+        void await_suspend(std::coroutine_handle<P> h) {
+            auto suspend_coroutine = h.promise().coroutine_handle_base();
+            await_suspend(suspend_coroutine);
+        }
+
+        void await_suspend(std::coroutine_handle<TaskPromiseBase> h);
+
+        DsnResult await_resume()
+        {
+            return this->m_result;
+        }
+
+        
+
     };
 
     class DnsResolver
     {
         friend class DnsResolverFactory;
+        friend class DnsResolverAwaiter;
 
         IoContext m_ctx;
-        Mutex m_mtx;
-
         Queue m_requests;
-        ConditionVariable m_request_evt{m_ctx};
         std::thread m_thread;
-        PostTask m_posttask;
+        std::coroutine_handle<TaskPromiseBase> m_main_coroutine;
 
         TINYASYNC_NOINL DnsResolver()
         {
-
             m_thread = std::thread([this]() {
                 TINYASYNC_GUARD("[dns thread]");
 
@@ -61,12 +103,10 @@ namespace tinyasync
         ~DnsResolver()
         {
             m_ctx.request_abort();
-            m_posttask.set_callback([](PostTask*) { });
-            m_ctx.post_task(&m_posttask);
             m_thread.join();
         }
 
-        void gethostaddr(DnsRequest &req)
+        void gethostaddr(DnsResolverAwaiter &req)
         {
             addrinfo *result;
 
@@ -106,49 +146,30 @@ namespace tinyasync
 
         Task<> work(IoContext &)
         {
+            m_main_coroutine = co_await this_coroutine<TaskPromiseBase>();
             for (;;)
             {
-                DnsRequest *preq;
-                co_await m_mtx.lock(m_ctx);
-                for (;;)
-                {
-                    auto node =m_requests.pop();
+                DnsResolverAwaiter *awaiter;   
+                for(;;) {       
+                    auto node = m_requests.pop();
                     if(node) {
-                        preq = static_cast<DnsRequest*>(node);
+                        awaiter = static_cast<DnsResolverAwaiter *>(node);
                         break;
                     }
-                    co_await m_request_evt.wait(m_mtx);
+                    co_await std::suspend_always{ };
                 }
-                m_mtx.unlock();
+                gethostaddr(*awaiter);
 
-                auto &req = *preq;
-                gethostaddr(req);
-                req.m_done = true;
-                req.m_condv.notify_one();
+                // should thread safe
+                awaiter->m_ctx->post_task(&awaiter->m_local_task);
             }
         }
 
     public:
         // ctx must be thread safe for posting task
-        Task<DsnResult> resolve(IoContext &ctx, char const *name)
+        DnsResolverAwaiter resolve(IoContext &ctx, char const *name)
         {
-            DnsRequest req{ctx, name};
-
-            co_await m_mtx.lock(ctx);
-
-            auto mtx_ = auto_unlock(m_mtx);
-            m_requests.push(&req);
-            m_request_evt.notify_one();
-
-            for (; !req.m_done;)
-            {
-                // remote dns thread may post task to ctx
-                co_await req.m_condv.wait(m_mtx);
-            }
-            // any thread may post task to ctx
-            mtx_.unlock();
-
-            co_return req.m_result;
+            return {*this, *ctx.get_io_ctx_base(), name };
         }
     };
 
@@ -165,6 +186,35 @@ namespace tinyasync
     inline DnsResolver &dns_resolver()
     {
         return DnsResolverFactory::dns_thread();
+    }
+
+
+    inline void DnsResolverAwaiter::await_suspend(std::coroutine_handle<TaskPromiseBase> h)
+    {
+        m_suspend_coroutine = h;        
+
+        // should thread safe
+        m_dns_resolver->m_ctx.post_task(&this->m_remote_task);
+        
+    }
+
+    inline void DnsResolverAwaiter::do_remote_task(PostTask *posttask)
+    {
+
+        TINYASYNC_GUARD("DnsResolverAwaiter::do_remote_task(): ");
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+            auto awaiter = (DnsResolverAwaiter*)((char*)posttask - offsetof(DnsResolverAwaiter, m_remote_task));
+#pragma GCC diagnostic pop
+
+        TINYASYNC_LOG("run ...");
+        auto resolver = awaiter->m_dns_resolver;
+        resolver->m_requests.push(awaiter);        
+        if(resolver->m_main_coroutine) {
+            TINYASYNC_LOG("resume main coroutine");
+            TINYASYNC_RESUME(resolver->m_main_coroutine);
+        }
+
     }
 
 } // namespace tinyasync
