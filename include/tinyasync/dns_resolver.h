@@ -176,7 +176,7 @@ namespace tinyasync
 
 
         bool operator<(DnsResolver const &r) const {
-            return this->m_acc_size > this->m_acc_size;
+            return this->m_acc_size < this->m_acc_size;
         }
         bool operator==(DnsResolver const &r) const {
             return this == &r;

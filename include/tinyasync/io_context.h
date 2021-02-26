@@ -469,9 +469,9 @@ namespace tinyasync
                 const auto epfd = this->event_poll_handle();
                 int const timeout = -1; // indefinitely
 
-                TINYASYNC_LOG("waiting event ... handle = %s\n", handle_c_str(epfd));
+                TINYASYNC_LOG("waiting event ... handle = %s", handle_c_str(epfd));
                 int nfds = epoll_wait(epfd, (epoll_event *)events, maxevents, timeout);
-                TINYASYNC_LOG("epoll wakeup %s\n", handle_c_str(epfd));
+                TINYASYNC_LOG("epoll wakeup handle = %s", handle_c_str(epfd));
 
                 if constexpr (k_multiple_thread)
                 {
@@ -553,6 +553,7 @@ namespace tinyasync
                     auto callback = (Callback *)evt.data.ptr;
                     if (callback >= CallbackGuard)
                     {
+                        TINYASYNC_LOG("invoke callback");
                         try
                         {
                             callback->callback(evt);

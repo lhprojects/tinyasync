@@ -346,6 +346,7 @@ namespace tinyasync {
         {
             this->~Task();
             m_h = r.m_h;
+            r.m_h = nullptr;
             return *this;
         }
 
