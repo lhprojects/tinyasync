@@ -196,6 +196,8 @@ namespace tinyasync
             m_dns_resolvers.emplace();
         }
 
+
+    public:
         void add_dsn_resolvers(size_t n)
         {
             for(int i = 0; i < n; ++i) {                
@@ -204,8 +206,6 @@ namespace tinyasync
                 m_mutex.unlock();
             }
         }
-
-    public:
 
         void release_resolver(DnsResolver *resolver)
         {
@@ -238,26 +238,25 @@ namespace tinyasync
             return resolver;
         }
 
-        // no inline is an optimization
-        // don't messup the main story line
-        TINYASYNC_NOINL static DnsResolverFactory &factory()
-        {
-            static DnsResolverFactory factory;
-            return factory;
-        }
-
         // ctx must be thread safe for posting task
         DnsResolverAwaiter resolve(IoContext &ctx, char const *name)
         {
             return {*this, *ctx.get_io_ctx_base(), name };
         }
+
+        static DnsResolverFactory dns_factory;
+
+        static DnsResolverFactory &instance() {
+            return dns_factory;
+        }
     };
 
+    inline DnsResolverFactory DnsResolverFactory::dns_factory;
 
     DnsResolverAwaiter dns_resolve(IoContext &ctx, char const *name)
     {
-        static DnsResolverFactory *factory = &DnsResolverFactory::factory();
-        return factory->resolve(ctx, name);
+        auto inst = &DnsResolverFactory::instance();   
+        return inst->resolve(ctx, name);
     }
 
     inline void DnsResolverAwaiter::await_suspend(std::coroutine_handle<TaskPromiseBase> h)

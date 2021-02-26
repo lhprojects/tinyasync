@@ -39,7 +39,10 @@ Task<> dns(IoContext &ctx)
 int main()
 {
 
+    DnsResolverFactory::instance().add_dsn_resolvers(2);
+
     TINYASYNC_GUARD("[1] ");
+    
     IoContext ctx;
         
     co_spawn(dns(ctx));
