@@ -299,10 +299,49 @@ namespace tinyasync {
                 TINYASYNC_LOG("set continuum of `%s` to `%s`", c_name(m_sub_coroutine), c_name(suspend_coroutine));
                 TINYASYNC_LOG("`%s` suspended, resume `%s`", c_name(suspend_coroutine), c_name(m_sub_coroutine));
 
+                TINYASYNC_ASSERT(!m_sub_coroutine.done());
+
                 auto sub_coroutine = m_sub_coroutine;
                 sub_coroutine.promise().m_continuum = suspend_coroutine;
                 sub_coroutine.promise().m_resume_result = suspend_coroutine.promise().m_resume_result;
                 return sub_coroutine;
+            }
+
+            Result await_resume();
+
+        };
+
+        struct JoinAwaiter
+        {
+            std::coroutine_handle<promise_type> m_sub_coroutine;
+
+            JoinAwaiter(std::coroutine_handle<promise_type> h) : m_sub_coroutine(h)
+            {
+            }
+
+            bool await_ready() noexcept
+            {
+                return m_sub_coroutine.done();
+            }
+
+            template<class Promise>
+            void await_suspend(std::coroutine_handle<Promise> suspend_coroutine) {
+                std::coroutine_handle<TaskPromiseBase> h = suspend_coroutine.promise().coroutine_handle_base();
+                await_suspend(h);
+            }
+
+            void await_suspend(std::coroutine_handle<TaskPromiseBase> suspend_coroutine)
+            {
+                TINYASYNC_GUARD("Task(`%s`).Awaiter.await_suspend(): ", c_name(m_sub_coroutine));
+
+                TINYASYNC_LOG("set continuum of `%s` to `%s`", c_name(m_sub_coroutine), c_name(suspend_coroutine));
+                TINYASYNC_LOG("`%s` suspended, resume `%s`", c_name(suspend_coroutine), c_name(m_sub_coroutine));
+
+                TINYASYNC_ASSERT(!m_sub_coroutine.done());
+
+                auto sub_coroutine = m_sub_coroutine;
+                sub_coroutine.promise().m_continuum = suspend_coroutine;
+                sub_coroutine.promise().m_resume_result = suspend_coroutine.promise().m_resume_result;
             }
 
             Result await_resume();
@@ -328,6 +367,12 @@ namespace tinyasync {
         {
             return { m_h };
         }
+
+        JoinAwaiter join()
+        {
+            return { m_h };
+        }
+
 
         Task() : m_h(nullptr)
         {
@@ -378,10 +423,6 @@ namespace tinyasync {
         {
             promise().m_dangling = true;
             return release();
-        }
-
-        Awaiter join() {
-            return { coroutine_handle_base() };
         }
 
 
@@ -520,7 +561,7 @@ namespace tinyasync {
     {
         auto sub_coroutine = m_sub_coroutine;
         TINYASYNC_GUARD("Task(`%s`).Awaiter.await_resume(): ", c_name(sub_coroutine));
-        assert(sub_coroutine.done());
+        TINYASYNC_ASSERT(sub_coroutine.done());
         auto base_coro = sub_coroutine.promise().coroutine_handle_base();
         throw_if_necessary(base_coro, TINYASYNC_FUNCNAME);        
         if constexpr (!std::is_same_v<void, Result>) {
@@ -528,6 +569,18 @@ namespace tinyasync {
         }
     }
 
+    template<class Result>
+    Result Task<Result>::JoinAwaiter::await_resume()
+    {
+        auto sub_coroutine = m_sub_coroutine;
+        TINYASYNC_GUARD("Task(`%s`).JoinAwaiter.await_resume(): ", c_name(sub_coroutine));
+        TINYASYNC_ASSERT(sub_coroutine.done());
+        auto base_coro = sub_coroutine.promise().coroutine_handle_base();
+        throw_if_necessary(base_coro, TINYASYNC_FUNCNAME);        
+        if constexpr (!std::is_same_v<void, Result>) {
+            return std::move(sub_coroutine.promise().m_result);
+        }
+    }
 
     class YieldAwaiter {
     public:

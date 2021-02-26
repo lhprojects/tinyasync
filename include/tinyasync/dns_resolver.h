@@ -98,8 +98,11 @@ namespace tinyasync
 
         TINYASYNC_NOINL DnsResolver()
         {
+            static std::atomic_int dns_resolver_n = 0;
             m_thread = std::thread([this]() {
-                TINYASYNC_GUARD("[dns thread] ");
+                dns_resolver_n++;
+
+                TINYASYNC_GUARD("[dns thread %d]", dns_resolver_n.load());
 
                 co_spawn(this->work(m_ctx));
                 this->m_ctx.run();

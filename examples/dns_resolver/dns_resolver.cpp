@@ -34,7 +34,7 @@ Task<> dns(IoContext &ctx)
     std::uniform_int_distribution<int> dist;
     
     
-    for(int i = 0; i < 20; ++i) {
+    for(int i = 0; i < 7; ++i) {
         uint32_t rnd = dist(eng);
         std::string name = "www." + std::to_string(rnd) + ".com";
         names.push_back(name);
@@ -43,10 +43,11 @@ Task<> dns(IoContext &ctx)
     std::vector<Task<> > tasks;
     for(auto &name : names) {
         tasks.push_back(dns1(ctx, name.c_str()));
+        tasks.back().resume();
     }
-    int i = 0;
+
     for(auto &task : tasks) {
-        co_await task;
+        co_await task.join();
     }
     
     ctx.request_abort();
