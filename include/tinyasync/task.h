@@ -372,12 +372,15 @@ namespace tinyasync {
         }
 
         // Release the ownership of coroutine.
-        // Tell the coroutine it is detached.
-        // Coroutine will destroy itself, when it is finished.
+        // mark the coroutine it is detached.
         std::coroutine_handle<promise_type> detach()
         {
             promise().m_dangling = true;
             return release();
+        }
+
+        Awaiter join() {
+            return { coroutine_handle_base() };
         }
 
 

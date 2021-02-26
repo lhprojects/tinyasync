@@ -244,6 +244,23 @@ namespace tinyasync {
 
 #endif
 
+#if defined(__GNUC__)
+    // Type can't be class_template<int,int>
+    //                                 ^
+    //                                 |
+    #define TINYASYNC_POINT_FROM_MEMBER(result, member_pointer, Type, member) \
+        _Pragma("GCC diagnostic push") \
+        _Pragma("GCC diagnostic ignored \"-Winvalid-offsetof\"") \
+        Type* result = (Type*)((char*)member_pointer - offsetof(Type, member)); \
+        _Pragma("GCC diagnostic pop")
+#else
+    // Type can't be class_template<int,int>
+    //                                 ^
+    //                                 |
+    #define TINYASYNC_POINT_FROM_MEMBER(result, member_pointer, Type, member) \
+        Type* result = (Type*)((char*)member_pointer - offsetof(Type, member));
+#endif
+
 
     template<class T, class L>
     T do_initialize_once(std::atomic<T>& atom, T uninitialized_flag, std::mutex& mtx, L func)
@@ -661,6 +678,31 @@ namespace tinyasync {
     {
     public:
         ListNode *m_next = nullptr;
+    };
+
+
+    class Stack
+    {
+        ListNode m_before_head;
+        void push(ListNode * node) {
+            node->m_next = m_before_head.m_next;
+            m_before_head.m_next = node;
+        }
+
+        bool empty() {
+            return !m_before_head.m_next;
+        }
+
+        ListNode *pop() {
+            auto head = m_before_head.m_next;
+            if(head) {
+                m_before_head.m_next = head->m_next;
+                return head;
+            } else {
+                return nullptr;
+            }
+        }
+
     };
 
     struct Queue

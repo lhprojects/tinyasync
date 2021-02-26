@@ -259,6 +259,7 @@ namespace tinyasync
     {
 
         TINYASYNC_GUARD("IoContext.IoContext(): ");
+        TINYASYNC_LOG("Ctx at %p", this);
 
         m_memory_resource = T::get_memory_resource();
 #ifdef _WIN32
@@ -331,6 +332,7 @@ namespace tinyasync
         epoll_event evt;
         evt.data.ptr = (void *)1;
         evt.events = EPOLLIN | EPOLLONESHOT;
+        // not thread safe by standard but currently OK
         if(epoll_ctl(m_epoll_handle, EPOLL_CTL_MOD, m_wakeup_handle, &evt) < 0) {
             std::string err =  format("can't set wakeup event %s (epoll %s)", handle_c_str(m_wakeup_handle), handle_c_str(m_epoll_handle));
             TINYASYNC_LOG(err.c_str());
@@ -353,11 +355,12 @@ namespace tinyasync
             auto thread_wating = m_thread_waiting;
             m_que_lock.unlock();
 
-            TINYASYNC_LOG(" ");
             if (thread_wating > 0)
             {
                 TINYASYNC_LOG("has thread waiting event %s (epoll %s)", handle_c_str(m_wakeup_handle), handle_c_str(m_epoll_handle));
                 wakeup_a_thread();
+            } else {
+                TINYASYNC_LOG("no thread waiting");
             }
         }
         else
