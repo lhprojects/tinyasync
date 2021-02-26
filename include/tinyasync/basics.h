@@ -206,6 +206,7 @@ namespace tinyasync {
 #endif
 
 
+#define TINYASYNC_NODISCARD [[nodiscard]]
 // compiler related
 // clang also define __GNUC__ ...
 

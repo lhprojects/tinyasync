@@ -26,7 +26,7 @@ namespace tinyasync
     };
 
 
-    struct DnsResolverAwaiter : ListNode
+    struct [[nodiscard]] DnsResolverAwaiter : ListNode
     {
         DnsResolverFactory *m_dns_resolver_factory;
         DnsResolver *m_dns_resolver;

@@ -248,7 +248,7 @@ namespace tinyasync {
     }
         
     template<class Result = void>
-    class [[nodiscard]] Task
+    class TINYASYNC_NODISCARD Task
     {
     public:
         using promise_type = TaskPromise<Result>;
@@ -273,7 +273,7 @@ namespace tinyasync {
             return m_h.promise();
         }
 
-        struct Awaiter
+        struct TINYASYNC_NODISCARD Awaiter
         {
             std::coroutine_handle<promise_type> m_sub_coroutine;
 
@@ -311,7 +311,7 @@ namespace tinyasync {
 
         };
 
-        struct JoinAwaiter
+        struct TINYASYNC_NODISCARD JoinAwaiter
         {
             std::coroutine_handle<promise_type> m_sub_coroutine;
 
@@ -582,7 +582,7 @@ namespace tinyasync {
         }
     }
 
-    class YieldAwaiter {
+    class TINYASYNC_NODISCARD YieldAwaiter {
     public:
         bool await_ready() noexcept { return false; }
         void await_suspend(std::coroutine_handle<>) noexcept { }
@@ -593,7 +593,7 @@ namespace tinyasync {
         return { };
     }
 
-    class YieldAwaiterC {
+    class TINYASYNC_NODISCARD YieldAwaiterC {
         std::coroutine_handle<> m_coroutine;
     public:
         YieldAwaiterC(std::coroutine_handle<> h) {

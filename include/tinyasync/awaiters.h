@@ -235,7 +235,7 @@ namespace tinyasync {
     };
 
 
-    class AsyncReceiveAwaiter :
+    class TINYASYNC_NODISCARD AsyncReceiveAwaiter :
         public DataAwaiterMixin<AsyncReceiveAwaiter, void*>
     {
     public:
@@ -254,7 +254,7 @@ namespace tinyasync {
         std::size_t await_resume();
     };
 
-    class AsyncSendAwaiter : public std::suspend_always,
+    class TINYASYNC_NODISCARD AsyncSendAwaiter : public std::suspend_always,
         public DataAwaiterMixin<AsyncSendAwaiter, void const*>
     {
     public:
@@ -1159,7 +1159,7 @@ namespace tinyasync {
 
     };
 
-    class AcceptorAwaiter
+    class TINYASYNC_NODISCARD AcceptorAwaiter
     {
 
         friend class AcceptorImpl;
@@ -1519,7 +1519,7 @@ namespace tinyasync {
     };
 
 
-    class ConnectorAwaiter {
+    class TINYASYNC_NODISCARD ConnectorAwaiter {
         friend class ConnectorCallback;
 
         ConnectorImpl* m_connector;
@@ -1839,7 +1839,7 @@ namespace tinyasync {
 
     };
 
-    class TimerAwaiter
+    class TINYASYNC_NODISCARD TimerAwaiter
     {
     public:
         friend class TimerCallback;
