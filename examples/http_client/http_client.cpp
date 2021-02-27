@@ -6,10 +6,16 @@ using namespace tinyasync;
 Task<> do_download(IoContext &ctx, Name="download") {
 
 
-    hostent * record = gethostbyname("www.baidu.com");
-	in_addr * address = (in_addr * )record->h_addr;
-    uint32_t ip = ntohl(address->s_addr);
-    Connection conn = co_await async_connect(ctx, Protocol::ip_v4(), Endpoint(Address(ip), 80));
+    auto dns_result = co_await dns_resolve(ctx, "www.baidu.com");
+    if(dns_result.native_errc()) {
+        printf("can't resolve hostname\n");
+        co_return;
+    }
+
+    printf("ip: %s\n", dns_result.address().to_string().c_str());
+
+
+    Connection conn = co_await async_connect(ctx, Protocol::ip_v4(), Endpoint(dns_result.address(), 80));
 
     char const * http_header_baidu =
 R"(GET / HTTP/1.1

@@ -226,6 +226,14 @@ namespace tinyasync
         auto resolver = m_dns_resolver;
 
         resolver->m_spinlock.lock();
+        std::size_t n  = resolver->m_threads.size();
+        
+        if(n == 0) TINYASYNC_UNLIKELY {
+            resolver->m_spinlock.unlock(); 
+            resolver->add_workers(1);
+            resolver->m_spinlock.lock();
+        }
+
         resolver->m_requests.push(this);
         resolver->m_spinlock.unlock(); 
 
