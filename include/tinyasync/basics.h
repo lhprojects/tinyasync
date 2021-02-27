@@ -45,6 +45,7 @@ namespace std {
 #include <chrono>
 #include <functional>
 #include <new>
+#include <mutex>
 
 #ifdef _WIN32
 
@@ -465,6 +466,8 @@ namespace tinyasync {
         return sb;
     }
 
+    std::string get_log_str(char const* fmt, ...);
+
 #ifdef TINYASYNC_TRACE
 
 #define TINYASYNC_CAT_(a, b) a##b
@@ -473,30 +476,48 @@ namespace tinyasync {
 #define TINYASYNC_LOG(...) \
     do                     \
     {                      \
-        log(__VA_ARGS__);  \
-        printf("\n");      \
-        fflush(stdout);    \
+        auto out = get_log_str(__VA_ARGS__);\
+        printf("%s\n", out.c_str());\
     } while (0)
+
 #define TINYASYNC_LOG_NNL(...) do {\
-     log(__VA_ARGS__);\
-    fflush(stdout);\
-    } while(0)
+    do                     \
+    {                      \
+        auto out = get_log_str(__VA_ARGS__);\
+        printf("%s", out.c_str());\
+    } while (0)
+
 
 
 
     inline thread_local std::vector<std::string> log_prefix;
 
-
-
-    inline void log(char const* fmt, ...)
+    inline std::string get_log_str(char const* fmt, ...)
     {
+        std::string out;
         for (auto& p : log_prefix) {
-            printf("%s", p.c_str());
+            out.append(p);
         }
+
+        int n = 1;
+        {
+            va_list args;
+            va_start(args, fmt);
+            n = vsnprintf(NULL, 0, fmt, args);
+            va_end(args);
+        }
+
+        std::string buf;
+        buf.resize(n); // actual size: n + 1
+
         va_list args;
         va_start(args, fmt);
-        vprintf(fmt, args);
+        vsnprintf(buf.data(), n+1, fmt, args);
         va_end(args);
+
+        out += buf;
+
+        return out;
     }
 
     struct log_prefix_guad

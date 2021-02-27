@@ -2,7 +2,9 @@
 #define TINYASYNC_DNS_RESOLVER_H
 
 #include <thread>
-#include <set>
+#include <vector>
+#include <mutex>
+#include <condition_variable>
 
 namespace tinyasync
 {
@@ -28,31 +30,24 @@ namespace tinyasync
 
     struct [[nodiscard]] DnsResolverAwaiter : ListNode
     {
-        DnsResolverFactory *m_dns_resolver_factory;
         DnsResolver *m_dns_resolver;
         IoCtxBase *m_ctx;
         DsnResult m_result;
         std::coroutine_handle<TaskPromiseBase> m_suspend_coroutine;
         char const *m_name;
-        PostTask m_remote_task;     
         PostTask m_local_task;
 
-        DnsResolverAwaiter(DnsResolverFactory &resolver_factory, IoCtxBase &ctx, char const *name) {
+        DnsResolverAwaiter(DnsResolver &resolver, IoCtxBase &ctx, char const *name) {
             m_ctx = &ctx;
-            m_dns_resolver_factory = &resolver_factory;
-            m_remote_task.set_callback(do_remote_task);
+            m_dns_resolver = &resolver;
             m_local_task.set_callback(do_local_task);         
             m_name = name;   
         }
-
-
-        static void do_remote_task(PostTask *posttask);
 
         // resolve done
         // resume our coroutine
         static void do_local_task(PostTask *posttask)
         {
-            
             TINYASYNC_POINT_FROM_MEMBER(awaiter, posttask, DnsResolverAwaiter, m_local_task);
             TINYASYNC_RESUME(awaiter->m_suspend_coroutine);            
         }
@@ -79,41 +74,51 @@ namespace tinyasync
     class DnsResolver
     {
 
-        friend class DnsResolverFactory;
         friend class DnsResolverAwaiter;
 
-        // protected by DnsResolverFactory::m_mutex
-        std::size_t m_acc_size = 0;
-        typename std::multiset<DnsResolver>::iterator m_map_iter;
-
-
         // public for dns thread
-        IoContext m_ctx;
+        std::condition_variable m_condv;
+        std::mutex m_mutex;
         Queue m_requests;
-        std::thread m_thread;
-        std::coroutine_handle<TaskPromiseBase> m_main_coroutine;
+
+        DefaultSpinLock m_spinlock;
+        std::vector<std::thread> m_threads;
+        bool m_abort = false;
 
     public:
+        DnsResolver() = default;
         DnsResolver(DnsResolver &&) = delete;
 
-        TINYASYNC_NOINL DnsResolver()
-        {
-            static std::atomic_int dns_resolver_n = 0;
-            m_thread = std::thread([this]() {
-                dns_resolver_n++;
+        void add_workers(size_t n) {
 
-                TINYASYNC_GUARD("[dns thread %d]", dns_resolver_n.load());
+            for(size_t i = 0; i < n; ++i) {
 
-                co_spawn(this->work(m_ctx));
-                this->m_ctx.run();
-            });
+                std::unique_lock<std::mutex> guard(m_mutex);
+                m_threads.emplace_back([this] () {
+
+                    int id = this->m_threads.size();
+                    TINYASYNC_GUARD("[dns thread %d]", id);                    
+
+                    this->work(id);
+                });
+                guard.unlock();
+            }
         }
 
 
         ~DnsResolver()
         {
-            m_ctx.request_abort();
-            m_thread.join();
+            std::unique_lock<std::mutex> guard(m_mutex);
+            m_abort = true;
+            guard.unlock();
+            
+            m_condv.notify_all();
+
+            for(auto &thread : m_threads) {
+                thread.join();
+            }
+
+
         }
 
         void gethostaddr(DnsResolverAwaiter &req)
@@ -154,91 +159,46 @@ namespace tinyasync
             freeaddrinfo(result);
         }
 
-        Task<> work(IoContext &)
+        void work(int id)
         {
-            m_main_coroutine = co_await this_coroutine<TaskPromiseBase>();
-            for (;;)
+            for (;!m_abort;)
             {
-                DnsResolverAwaiter *awaiter;   
-                for(;;) {       
+                DnsResolverAwaiter *awaiter = nullptr;   
+                std::unique_lock<std::mutex> guard(m_mutex);
+                for(;!m_abort;) {                           
+                    m_spinlock.lock();
                     auto node = m_requests.pop();                    
+                    m_spinlock.unlock();
                     if(node) {
                         awaiter = static_cast<DnsResolverAwaiter *>(node);
                         break;
                     }
-                    co_await std::suspend_always{ };
+                    m_condv.wait(guard);
                 }
+                guard.unlock();
+                if(m_abort) {
+                    break;
+                }
+                
                 gethostaddr(*awaiter);
 
-                // should thread safe
+
                 TINYASYNC_ASSERT(awaiter->m_ctx);
                 TINYASYNC_LOG("post response to %p", awaiter->m_ctx);
+                // should thread safe
                 awaiter->m_ctx->post_task(&awaiter->m_local_task);
             }
+
+            TINYASYNC_LOG("worker %d abort", id);
         }
 
 
-        bool operator<(DnsResolver const &r) const {
-            return this->m_acc_size < this->m_acc_size;
-        }
-        bool operator==(DnsResolver const &r) const {
-            return this == &r;
-        }
 
 
-    };
+        static DnsResolver dns_resolver;
 
-    class DnsResolverFactory
-    {
-
-        SysSpinLock m_mutex;
-        std::multiset<DnsResolver> m_dns_resolvers;
-
-        void add_dsn_resolvers_1_nolock()
-        {
-            m_dns_resolvers.emplace();
-        }
-
-
-    public:
-        void add_dsn_resolvers(size_t n)
-        {
-            for(int i = 0; i < n; ++i) {                
-                m_mutex.lock();
-                add_dsn_resolvers_1_nolock();
-                m_mutex.unlock();
-            }
-        }
-
-        void release_resolver(DnsResolver *resolver)
-        {
-            m_mutex.lock();
-            auto iter = resolver->m_map_iter;
-            auto node = m_dns_resolvers.extract(iter);
-            resolver->m_acc_size -= 1;
-            m_dns_resolvers.insert(std::move(node));
-            m_mutex.unlock();
-        }
-
-        DnsResolver *accquire_resolver()
-        {
-            DnsResolver * resolver;
-            m_mutex.lock();
-
-            if(m_dns_resolvers.empty()) TINYASYNC_UNLIKELY
-            {
-                add_dsn_resolvers_1_nolock();
-            }
-
-            auto begin = m_dns_resolvers.begin();
-            auto begin_node = m_dns_resolvers.extract(begin);
-            resolver = &begin_node.value();
-            resolver->m_acc_size += 1;
-            auto new_iter = m_dns_resolvers.insert(std::move(begin_node));
-            resolver->m_map_iter = new_iter;
-            m_mutex.unlock();
-
-            return resolver;
+        static DnsResolver &instance() {
+            return dns_resolver;
         }
 
         // ctx must be thread safe for posting task
@@ -246,63 +206,37 @@ namespace tinyasync
         {
             return {*this, *ctx.get_io_ctx_base(), name };
         }
-
-        static DnsResolverFactory dns_factory;
-
-        static DnsResolverFactory &instance() {
-            return dns_factory;
-        }
     };
 
-    inline DnsResolverFactory DnsResolverFactory::dns_factory;
+    inline DnsResolver DnsResolver::dns_resolver;
 
     DnsResolverAwaiter dns_resolve(IoContext &ctx, char const *name)
     {
-        auto inst = &DnsResolverFactory::instance();   
+        auto inst = &DnsResolver::instance();   
         return inst->resolve(ctx, name);
     }
 
     inline void DnsResolverAwaiter::await_suspend(std::coroutine_handle<TaskPromiseBase> h)
     {
         TINYASYNC_GUARD("DnsResolverAwaiter::await_suspend(): ");
+        TINYASYNC_LOG("enqueue");
+
         m_suspend_coroutine = h;        
 
-        auto resolver = m_dns_resolver_factory->accquire_resolver();
-        m_dns_resolver = resolver;
+        auto resolver = m_dns_resolver;
 
-        TINYASYNC_LOG("post to resolver %p", m_dns_resolver);
-        // should thread safe
-        resolver->m_ctx.post_task(&this->m_remote_task);
-        
+        resolver->m_spinlock.lock();
+        resolver->m_requests.push(this);
+        resolver->m_spinlock.unlock(); 
+
+        resolver->m_condv.notify_one();      
     }
 
     DsnResult DnsResolverAwaiter::await_resume()
     {
         TINYASYNC_GUARD("DnsResolverAwaiter::await_suspend(): ");
-        TINYASYNC_LOG("release resolver %p", m_dns_resolver);
-        m_dns_resolver_factory->release_resolver(m_dns_resolver);
+        TINYASYNC_LOG("resolved");
         return this->m_result;
-    }
-
-
-    inline void DnsResolverAwaiter::do_remote_task(PostTask *posttask)
-    {
-
-
-        TINYASYNC_GUARD("DnsResolverAwaiter::do_remote_task(): ");
-
-        TINYASYNC_POINT_FROM_MEMBER(awaiter, posttask,  DnsResolverAwaiter, m_remote_task);
-
-        TINYASYNC_LOG("awaiter %p", awaiter);
-
-        auto resolver = awaiter->m_dns_resolver;
-        resolver->m_requests.push(awaiter);    
-
-        if(resolver->m_main_coroutine) {
-            TINYASYNC_LOG("resume main coroutine");
-            TINYASYNC_RESUME(resolver->m_main_coroutine);
-        }
-
     }
 
 } // namespace tinyasync

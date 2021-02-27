@@ -56,7 +56,7 @@ Task<> dns(IoContext &ctx)
 int main()
 {
 
-    DnsResolverFactory::instance().add_dsn_resolvers(10);
+    DnsResolver::instance().add_workers(10);
 
     TINYASYNC_GUARD("[1] ");
     
