@@ -69,6 +69,7 @@ namespace std {
 #include <arpa/inet.h>
 #include <cxxabi.h>
 #include <sys/eventfd.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 
 using SystemHandle = int;

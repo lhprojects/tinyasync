@@ -300,6 +300,7 @@ namespace tinyasync {
         bool m_send_shutdown = false;
         bool m_ready_to_send = true;
         bool m_ready_to_recv = true;
+        bool m_tcp_nodelay = false;
 
     public:
 
@@ -394,6 +395,14 @@ namespace tinyasync {
 
         ConnImpl(ConnImpl const&) = delete;
         ConnImpl& operator=(ConnImpl const&) = delete;
+
+
+        void set_tcp_no_delay(bool b = true) {
+            int flags = b;
+            if(::setsockopt(m_conn_handle, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof(flags)) < 0) {
+                throw_errno("can't set tcp no delay");
+            }
+        }
 
         AsyncReceiveAwaiter async_read(void* buffer, std::size_t bytes)
         {
@@ -953,6 +962,12 @@ namespace tinyasync {
                 }
             }
         }
+
+        void set_tcp_no_delay(bool b = true) {
+            auto impl = m_impl.get();
+            impl->set_tcp_no_delay(b);
+        }
+
 
         bool is_closed() {
             auto impl = m_impl.get();

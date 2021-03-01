@@ -7,6 +7,7 @@ Pool pool;
 int nc = 0;
 std::chrono::seconds timeout { 0 };
 size_t nsess;
+bool tcp_no_delay = false;
 
 Task<> start(IoContext &ctx, Session &s)
 {
@@ -31,6 +32,8 @@ Task<> connect_(IoContext &ctx)
     std::vector<Session> sesses;
 	for (size_t i = 0; i <  nsess; ++i) {
 		Connection conn = co_await async_connect(ctx, protocol, endpoint);
+        if(tcp_no_delay)
+            conn.set_tcp_no_delay();
         sesses.push_back(Session(ctx, std::move(conn), &pool));
 	}
 
@@ -79,7 +82,7 @@ int main()
     timeout = std::chrono::seconds(10);
     block_size = 1024;
     initialize_pool(pool);
-
+    tcp_no_delay = true;
 
 	client();
 	return 0;

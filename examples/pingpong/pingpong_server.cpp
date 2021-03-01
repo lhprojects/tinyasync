@@ -3,6 +3,7 @@
 
 int nc = 0;
 Pool pool;
+bool tcp_no_delay = false;
 
 Task<> start(IoContext &ctx, Session s)
 {
@@ -34,6 +35,9 @@ Task<> listen(IoContext &ctx)
 	Acceptor acceptor(ctx, Protocol::ip_v4(), Endpoint(Address::Any(), 8899));
 	for (;;) {
 		Connection conn = co_await acceptor.async_accept();
+        if(tcp_no_delay)
+            conn.set_tcp_no_delay();
+
 		++nc;
 		printf("%d conn\n", nc);
 		co_spawn(start(ctx, Session(ctx, std::move(conn), &pool)));
@@ -64,6 +68,8 @@ int main()
 {
     block_size = 1024;
     initialize_pool(pool);
+	tcp_no_delay = true;
+
 	try {
 		server();
 	} catch(...) {		

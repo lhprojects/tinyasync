@@ -66,7 +66,8 @@ Accept: */*
             break;
         }
         b[nbytes] = '\0';
-        printf("%s", b);
+        printf("%zu\n", nbytes);
+        //printf("%s", b);
     }
 
     ctx.request_abort();
