@@ -1,12 +1,28 @@
-#define TINYASYNC_TRACE
+//#define TINYASYNC_TRACE
 #include <tinyasync/tinyasync.h>
+#include <regex>
 
 using namespace tinyasync;
+
+void print(std::string const &s) {
+
+    for(auto c : s) {
+        
+        if(c == '\r') {
+            printf("\\r");
+        } else if(c == '\n') {
+            printf("\\n\n");
+        } else {
+            printf("%c", c);
+        }
+    }
+}
 
 Task<> do_download(IoContext &ctx, Name="download") {
 
 
-    auto dns_result = co_await dns_resolve(ctx, "www.baidu.com");
+    char const *hostname = "www.baidu.com";
+    auto dns_result = co_await dns_resolve(ctx, hostname);
     if(dns_result.native_errc()) {
         printf("can't resolve hostname\n");
         co_return;
@@ -17,17 +33,22 @@ Task<> do_download(IoContext &ctx, Name="download") {
 
     Connection conn = co_await async_connect(ctx, Protocol::ip_v4(), Endpoint(dns_result.address(), 80));
 
-    char const * http_header_baidu =
+    std::string http_header =
 R"(GET / HTTP/1.1
-Host: www.baidu.com
-User-Agent: Mozilla/5.0
-Accept: text/html
+Host: HOSTNAME
+User-Agent: curl/7.71.1
+Connection: close
+Accept: */*
 
 )";
-    auto http_header = http_header_baidu;
 
-    char const *buf = http_header;
-    std::size_t remain = strlen(http_header);
+    http_header = std::regex_replace(http_header, std::regex("\r?\n"), "\r\n");
+    http_header = std::regex_replace(http_header, std::regex("HOSTNAME"), hostname);
+    
+    char const *buf = http_header.data();
+    std::size_t remain = http_header.size();
+
+    print(http_header);
 
     // send request
     for(;remain;) {
@@ -45,7 +66,7 @@ Accept: text/html
             break;
         }
         b[nbytes] = '\0';
-        printf("---- %s", b);
+        printf("%s", b);
     }
 
     ctx.request_abort();
