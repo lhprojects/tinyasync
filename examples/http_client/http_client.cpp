@@ -22,7 +22,7 @@ Task<> do_download(IoContext &ctx, Name="download") {
 
 
     char const *hostname = "www.baidu.com";
-    auto dns_result = co_await dns_resolve(ctx, hostname);
+    auto dns_result = co_await async_dns_resolve(ctx, hostname);
     if(dns_result.native_errc()) {
         printf("can't resolve hostname\n");
         co_return;

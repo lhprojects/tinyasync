@@ -9,7 +9,7 @@ using namespace tinyasync;
 
 Task<> dns1(IoContext &ctx, char const *name)
 {
-    DsnResult res = co_await dns_resolve(ctx, name);
+    DsnResult res = co_await async_dns_resolve(ctx, name);
     //DsnResult res;
     
     if(res.native_errc()) {

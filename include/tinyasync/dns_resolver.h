@@ -210,7 +210,7 @@ namespace tinyasync
 
     inline DnsResolver DnsResolver::dns_resolver;
 
-    DnsResolverAwaiter dns_resolve(IoContext &ctx, char const *name)
+    DnsResolverAwaiter async_dns_resolve(IoContext &ctx, char const *name)
     {
         auto inst = &DnsResolver::instance();   
         return inst->resolve(ctx, name);
