@@ -8,5 +8,6 @@
 #include "awaiters.h"
 #include "mutex.h"
 #include "dns_resolver.h"
+#include "memory_pool.h"
 
 #endif // TINYASYNC_H

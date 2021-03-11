@@ -7,7 +7,7 @@ find_package(Threads REQUIRED)
 if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
     add_compile_options(/std:c++latest)
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
-    add_compile_options(-fcoroutines -std=c++2a -Wfatal-errors)
+    add_compile_options(-fcoroutines -std=c++2a -Wfatal-errors -g -march=native)
 else()
     add_compile_options(-fcoroutines-ts -std=c++2a -Wfatal-errors -stdlib=libc++)
 endif()
@@ -20,6 +20,7 @@ set(HEADER_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/tinyasync/awaiters.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/tinyasync/mutex.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/tinyasync/dns_resolver.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include/tinyasync/memory_pool.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/tinyasync/tinyasync.h
 )
 
@@ -33,6 +34,7 @@ add_subdirectory("echo_server")
 add_subdirectory("http_client")
 add_subdirectory("http_helloworld_server")
 add_subdirectory("lockcore")
+add_subdirectory("memory_pool")
 add_subdirectory("mutex")
 add_subdirectory("pingpong")
 add_subdirectory("sleepsort")

@@ -2,6 +2,7 @@
 #define TINYASYNC_BUFFER_H
 
 #include <cstddef> // std::size_t, std::byte
+#include <bit>
 
 namespace tinyasync
 {
@@ -127,102 +128,6 @@ namespace tinyasync
         }
     };
 
-    class Pool
-    {
-        
-    public:
-
-        Pool() noexcept : m_block_size(0), m_block_per_chunk(0), m_head(nullptr)
-        {
-        }
-
-        Pool(std::size_t block_size, std::size_t block_per_chunk) noexcept
-        {
-            initialize(block_size, block_per_chunk);
-        }
-
-        Pool(Pool &&r) {
-            m_block_size = r.m_block_size;
-            m_block_per_chunk = r.m_block_per_chunk;
-            m_head = r.m_head;
-            m_chunks = std::move(r.m_chunks);
-            r.m_head = nullptr;
-            r.m_block_size = 0;
-            r.m_block_per_chunk = 0;
-        }
-
-        void swap(Pool &r) {
-            std::swap(m_block_size, r.m_block_size);
-            std::swap(m_block_per_chunk, r.m_block_per_chunk);
-            std::swap(m_head, r.m_head);
-            std::swap(m_chunks, r.m_chunks);
-        }
-
-        Pool &operator=(Pool &&r) {
-            Pool pool(std::move(r));       
-            return *this;     
-        }
-
-        void initialize(std::size_t block_size, std::size_t block_per_chunk) {
-            m_block_size = std::max(sizeof(void *), block_size);
-            m_block_per_chunk = block_per_chunk;
-            m_head = nullptr;
-        }
-
-        size_t m_block_size;
-        size_t m_block_per_chunk;
-        ListNode *m_head;
-
-        std::vector<void *> m_chunks;
-
-        void *alloc() noexcept
-        {
-            auto head = m_head;
-            if (!head) TINYASYNC_UNLIKELY
-            {
-                    auto block_per_chunk = m_block_per_chunk;
-                    auto block_size = m_block_size;
-                    std::size_t memsize = block_size * block_per_chunk;
-                    if(!memsize) {
-                        return nullptr;
-                    }
-                    // max alignment
-                    auto *h = ::malloc(memsize);
-                    if (!h)
-                    {
-                        return h;
-                    }
-                    m_chunks.push_back(h);
-                    for (std::size_t i = 0; i < block_per_chunk - 1; ++i)
-                    {
-                        ListNode *p = (ListNode *)(((char *)h) + block_size * i);
-                        ListNode *p2 = (ListNode *)(((char *)h) + block_size * (i + 1));
-                        p->m_next = p2;
-                    }
-                    ListNode *p = (ListNode *)(((char *)h) + block_size * (block_per_chunk - 1));
-                    p->m_next = nullptr;
-                    m_head = (ListNode *)h;
-                    head = m_head;
-            }
-            m_head = head->m_next;
-            return head;
-        }
-
-        void free(void *node_) noexcept
-        {
-            auto node = (ListNode *)node_;
-            node->m_next = m_head;
-            m_head = node;
-        }
-
-        ~Pool() noexcept
-        {
-            for (auto *p : m_chunks)
-            {
-                ::free(p);
-            }
-        }
-    };
 
 } // namespace tinyasync
 
