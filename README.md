@@ -58,6 +58,7 @@ You need to include tinyasync as following:
 #include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/awaiters.h>
 #include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/mutex.h>
 #include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/dns_resolver.h>
+#include <https://raw.githubusercontent.com/lhprojects/tinyasync/master/include/tinyasync/memory_pool.h>
 <your code>
 ```
 
