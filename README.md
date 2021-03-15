@@ -31,16 +31,18 @@ This is a header library. You needn't to build the library itself. Just adding t
 
 ### IoContext
 ```c++
-// multiple thread io contex, by default
+// multiple thread io contex
 IoContext ctx(std::true_type{});
+// multiple thread io contex by default
+IoContext ctx;
 // single thread io context
 IoContext ctx(std::false_type{});
 ```
 
 Note:
 * You don't have to link with e.g. pthread if you are using single thread version.
-* Performance is tittle different. Always recommend you to use multiple thread version.
-You can't persist in using single thread from beginning to the end in any real world application.
+* Performance is tittle different. Recommend you always to use multiple thread version.
+Single thread version can not satisfy your need for real world application.
 
 
 ## Examples
