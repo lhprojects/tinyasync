@@ -8,7 +8,8 @@
 
 using namespace tinyasync;
 
-const size_t test_size = 10000;
+const size_t test_size = 15;
+const size_t align_size = 8;
 std::pmr::monotonic_buffer_resource mbr;
 void test_memory_resource(char const *title, std::pmr::memory_resource *mr)
 {
@@ -20,7 +21,7 @@ void test_memory_resource(char const *title, std::pmr::memory_resource *mr)
 
     int n = 100000;
     int m = n/2;
-    int N = 10;
+    int N = 100;
     mem.resize(n);
 
 
@@ -32,7 +33,7 @@ void test_memory_resource(char const *title, std::pmr::memory_resource *mr)
 
             auto t0 = std::chrono::high_resolution_clock::now();
             for(int i = 0; i < m; ++i) {
-                void *p = mr->allocate(test_size);
+                void *p = mr->allocate(test_size, align_size);
                 mem[i] = p;
             }
             auto t1 = std::chrono::high_resolution_clock::now();
@@ -52,7 +53,7 @@ void test_memory_resource(char const *title, std::pmr::memory_resource *mr)
             for(int i = 0; i < m; ++i)
             {
                 if(mem[i]) {
-                    mr->deallocate(mem[i], test_size);
+                    mr->deallocate(mem[i], test_size, align_size);
                     mem[i] = nullptr;
                 }
             }

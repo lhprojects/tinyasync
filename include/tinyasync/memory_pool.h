@@ -470,7 +470,7 @@ namespace tinyasync
             std::size_t size_ = std::max(size, 2*sizeof(void*));
             align = std::max(2*sizeof(uint32_t), align);
             const std::size_t block_size_ = size_ + align;
-            if (block_size_ > block_size(k_malloc_order))
+            if (block_size_ >= block_size(k_malloc_order))
             {
                 ::free(p);
                 return;
