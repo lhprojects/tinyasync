@@ -4,11 +4,10 @@
 
 #include <chrono>
 using namespace tinyasync;
-Task<> task_generator(uint64_t n, uint64_t &x)
+Task<uint64_t> task_generator(uint64_t n)
 {
 	for (uint64_t i = 0; i < n; ++i) {
-		x = i;
-		co_await std::suspend_always{};
+		co_yield i;
 	}
 }
 
@@ -22,19 +21,19 @@ struct Iter
 
 		v = 0;
 	}
-	TINYASYNC_NOINL Iter &operator++()
+	TINYASYNC_NOINL void next()
 	{
 		v += 1;
-		return *this;
 	}
 
-	uint64_t operator*()
+	uint64_t get()
 	{
 		return v;
 	}
-	bool operator!=(int)
+
+	bool done()
 	{
-		return v != n;
+		return v == n;
 	}
 
 };
@@ -59,9 +58,9 @@ int main(int argc, char *[])
 
     timeit([&]() {  
         uint64_t total = 0;
-        uint64_t x;
-        Task<> task = task_generator(N, x);
+        Task<uint64_t> task = task_generator(N);
         for (; task.resume(); ) {
+			auto x = task.result();
             total += ((x << 1) + x%2);
         }
         return total;
@@ -69,8 +68,8 @@ int main(int argc, char *[])
 
     timeit([&]() {  
         uint64_t total = 0;
-		for (Iter iter(N); iter != 0; ++iter) {
-            uint64_t x = *iter;
+		for (Iter iter(N); !iter.done(); iter.next()) {
+            uint64_t x = iter.get();
             total += ((x << 1) + x%2);
 		}
         return total;
