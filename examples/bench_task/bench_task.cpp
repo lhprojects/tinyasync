@@ -11,8 +11,19 @@ Task<uint64_t> task_generator(uint64_t n)
 	for (uint64_t i = 0; i < n; ++i) {
 		co_yield i;
 	}
-	co_return 0;
 }
+
+Task<uint64_t> task_generator2(uint64_t n, uint64_t i = -1)
+{
+	for(;;) {
+		++i;
+		if(i == n) {
+			break;
+		}
+		co_yield i;
+	}
+}
+
 
 struct Iter
 {
@@ -69,6 +80,16 @@ TINYASYNC_NOINL uint64_t foo() {
 	return total;
 }
 
+TINYASYNC_NOINL uint64_t foo2() {
+    uint64_t N = 10;
+	uint64_t total = 0;
+	Task<uint64_t> task = task_generator2(N);
+	for (; task.resume(); ) {
+		auto x = task.result();
+		total += ((total >> 1) + x);
+	}
+	return total;
+}
 int main(int argc, char *[])
 {
 
