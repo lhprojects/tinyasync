@@ -13,17 +13,17 @@ namespace tinyasync {
 
     class TaskPromiseBase {
     public:
-        ResumeResult* m_resume_result;
         std::exception_ptr m_unhandled_exception = nullptr;
         std::coroutine_handle<TaskPromiseBase> m_continuation = nullptr;
+        ResumeResult* m_resume_result;
         bool m_dangling = false;
 
 
         inline static void * do_alloc(std::size_t size, std::pmr::memory_resource *memory_resource)
         {
             // put allocator at the end of the frame
-            auto memory_resource_size =  sizeof(std::pmr::memory_resource*);
-            auto memory_resource_align =  alignof(std::pmr::memory_resource*);
+            auto constexpr memory_resource_size =  sizeof(std::pmr::memory_resource*);
+            auto constexpr memory_resource_align =  alignof(std::pmr::memory_resource*);
             auto memory_resource_offset = (size  + memory_resource_align - 1u) & ~(memory_resource_align - 1u);
 
             auto ptr = memory_resource->allocate(memory_resource_offset + memory_resource_size);
@@ -71,8 +71,8 @@ namespace tinyasync {
             TINYASYNC_GUARD("Task.Promise.operator delete(): ");
             TINYASYNC_LOG("%d bytes at %p", (int)size, ptr);
 
-            auto memory_resource_size =  sizeof(std::pmr::memory_resource*);
-            auto memory_resource_align =  alignof(std::pmr::memory_resource*);
+            auto constexpr memory_resource_size =  sizeof(std::pmr::memory_resource*);
+            auto constexpr memory_resource_align =  alignof(std::pmr::memory_resource*);
             auto memory_resource_offset = (size  + memory_resource_align - 1u) & ~(memory_resource_align - 1u);
 
             auto memory_resource = *(std::pmr::memory_resource**)((char*)ptr + memory_resource_offset);
@@ -594,8 +594,8 @@ namespace tinyasync {
 
     // return true is coroutine is not done, otherwise return false
     // if the the coroutine has unhandled exception, destroy the couroutine and rethrow the exception
-    // pre-condition: the task is not detached!
-    // Note: the coroutine is destroied when automatically if the coroutine is done
+    // pre-condition: the task is not detached and not done!
+    // Note: the coroutine is destroied automatically if the coroutine is done
     template<class Result>
     inline bool Task<Result>::resume()
     {

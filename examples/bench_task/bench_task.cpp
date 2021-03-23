@@ -1,5 +1,7 @@
 #ifndef TINYASYNC_BASICS_H
-#include <tinyasync/tinyasync.h>
+#include <tinyasync/basics.h>
+#include <tinyasync/task.h>
+#include <tinyasync/memory_pool.h>
 #endif
 
 #include <chrono>
@@ -9,6 +11,7 @@ Task<uint64_t> task_generator(uint64_t n)
 	for (uint64_t i = 0; i < n; ++i) {
 		co_yield i;
 	}
+	co_return 0;
 }
 
 struct Iter
@@ -16,7 +19,7 @@ struct Iter
 	uint64_t v;
 	uint64_t n;
 
-	Iter(uint64_t n) : n(n)
+	TINYASYNC_NOINL Iter(uint64_t n) : n(n)
 	{
 
 		v = 0;
@@ -36,6 +39,10 @@ struct Iter
 		return v == n;
 	}
 
+	TINYASYNC_NOINL ~Iter() {
+
+	}
+
 };
 
 template<class T>
@@ -50,40 +57,61 @@ void timeit(T t, uint64_t n, char const *title)
     printf("%30s: %f ns/iteration\n", title, double(1. * d/ n));
 
 }
+
+TINYASYNC_NOINL uint64_t foo() {
+    uint64_t N = 10;
+	uint64_t total = 0;
+	Task<uint64_t> task = task_generator(N);
+	for (; task.resume(); ) {
+		auto x = task.result();
+		total += ((total >> 1) + x);
+	}
+	return total;
+}
+
 int main(int argc, char *[])
 {
 
-    uint64_t N = 100000000;
+	uint64_t nCreate = 100000;
+    uint64_t N = 10;
 	N += argc;
+	uint64_t d = nCreate;
+
 
     timeit([&]() {  
-        uint64_t total = 0;
-        Task<uint64_t> task = task_generator(N);
-        for (; task.resume(); ) {
-			auto x = task.result();
-            total += ((x << 1) + x%2);
-        }
-        return total;
-    }, N, "task");
-
-    timeit([&]() {  
-        uint64_t total = 0;
-		for (Iter iter(N); !iter.done(); iter.next()) {
-            uint64_t x = iter.get();
-            total += ((x << 1) + x%2);
+		uint64_t total = 0;
+		for(uint64_t r = 0; r < nCreate; ++r) {
+			Task<uint64_t> task = task_generator(N);
+			for (; task.resume(); ) {
+				auto x = task.result();
+				total += ((total >> 1) + x);
+			}
 		}
-        return total;
-    }, N, "iter");
+		return total;
+    }, d, "task");
+
+    timeit([&]() {  
+		uint64_t total = 0;
+		for(uint64_t r = 0; r < nCreate; ++r) {
+			for (Iter iter(N); !iter.done(); iter.next()) {
+				uint64_t x = iter.get();
+				total += ((total >> 1) + x);
+			}
+		}
+		return total;
+    }, d, "iter");
 
     timeit([&]() {  
         uint64_t total = 0;
         uint64_t n = N;
-		for (uint64_t i = 0; i < n; ++i) {
-            uint64_t x = i;
-            total += ((x << 1) + x%2);
+		for(uint64_t r = 0; r < nCreate; ++r) {
+			for (uint64_t i = 0; i < n; ++i) {
+				uint64_t x = i;
+				total += ((total >> 1) + x);
+			}
 		}
         return total;
-    }, N, "naive");
+    }, d, "naive");
 
 
 

@@ -4,12 +4,15 @@ project ("tinasync")
 
 find_package(Threads REQUIRED)
 
+message("Compiler: ${CMAKE_CXX_COMPILER_ID}")
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
     add_compile_options(/std:c++latest)
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
     add_compile_options(-fcoroutines -std=c++2a -Wfatal-errors -g -march=native)
 else()
-    add_compile_options(-fcoroutines-ts -std=c++2a -Wfatal-errors -stdlib=libc++)
+    add_compile_options(-fcoroutines-ts -std=c++2a -Wfatal-errors -g -march=native -stdlib=libc++)
+    add_link_options(-fcoroutines-ts -std=c++2a -stdlib=libc++ -lc++abi -lc++ -lc++abi -lm -lc -lgcc_s -lgcc)
 endif()
 
 include_directories(../include)
