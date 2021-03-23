@@ -7,6 +7,60 @@ namespace tinyasync {
 
     struct ResumeResult;
 
+
+    template<class Result>
+    class Generator {
+        struct Promise
+        {
+            std::suspend_always initial_suspend() { return{}; }
+            std::suspend_always final_suspend() noexcept { return{}; }
+            void unhandled_exception() { throw; }
+
+            Generator get_return_object() {
+                auto coro = std::coroutine_handle<Promise>::from_promise(*this);
+                return {coro};
+            }
+
+            template<class V>
+            std::suspend_always yield_value(V &&v) {
+                m_result = std::forward<V>(v);
+                return {};
+            }
+
+            void return_void() {                
+            }
+
+            Result m_result;
+        };
+    public:        
+        using promise_type = Promise;
+
+        Generator(std::coroutine_handle<Promise> coro) : m_coro(coro) {
+        }
+        Generator(Generator &&) = default;
+        Generator(Generator const &) = delete;
+        Generator &operator=(Generator &&) = default;
+        Generator operator=(Generator const &) = delete;
+        ~Generator() {
+            m_coro.destroy();            
+        }
+
+
+        bool next() {
+            m_coro.resume();
+            return !m_coro.done();
+        }
+
+        Result &get() {
+            auto &promise = m_coro.promise();
+            return promise.m_result;
+        }
+
+    private:
+        std::coroutine_handle<Promise> m_coro;
+
+    };
+
     template<class Result>
     class Task;
 

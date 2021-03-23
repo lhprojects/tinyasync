@@ -13,17 +13,12 @@ Task<uint64_t> task_generator(uint64_t n)
 	}
 }
 
-Task<uint64_t> task_generator2(uint64_t n, uint64_t i = -1)
+Generator<uint64_t> generator(uint64_t n)
 {
-	for(;;) {
-		++i;
-		if(i == n) {
-			break;
-		}
+	for (uint64_t i = 0; i < n; ++i) {
 		co_yield i;
 	}
 }
-
 
 struct Iter
 {
@@ -83,9 +78,9 @@ TINYASYNC_NOINL uint64_t foo() {
 TINYASYNC_NOINL uint64_t foo2() {
     uint64_t N = 10;
 	uint64_t total = 0;
-	Task<uint64_t> task = task_generator2(N);
-	for (; task.resume(); ) {
-		auto x = task.result();
+	Generator<uint64_t> gen = generator(N);
+	for (; gen.next();) {
+		auto x = gen.get();
 		total += ((total >> 1) + x);
 	}
 	return total;
@@ -93,8 +88,8 @@ TINYASYNC_NOINL uint64_t foo2() {
 int main(int argc, char *[])
 {
 
-	uint64_t nCreate = 100000;
-    uint64_t N = 10;
+	uint64_t nCreate = 10000;
+    uint64_t N = 10000;
 	N += argc;
 	uint64_t d = nCreate;
 
@@ -110,6 +105,18 @@ int main(int argc, char *[])
 		}
 		return total;
     }, d, "task");
+
+    timeit([&]() {  
+		uint64_t total = 0;
+		for(uint64_t r = 0; r < nCreate; ++r) {
+			Generator<uint64_t> gen = generator(N);
+			for (; gen.next(); ) {
+				auto x = gen.get();
+				total += ((total >> 1) + x);
+			}
+		}
+		return total;
+    }, d, "generator");
 
     timeit([&]() {  
 		uint64_t total = 0;
