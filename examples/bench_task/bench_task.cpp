@@ -68,8 +68,7 @@ void timeit(T t, uint64_t n, char const *title)
 
 }
 
-TINYASYNC_NOINL uint64_t foo() {
-    uint64_t N = 10;
+TINYASYNC_NOINL uint64_t foo(uint64_t N) {
 	uint64_t total = 0;
 	Task<uint64_t> task = task_generator(N);
 	for (; task.resume(); ) {
@@ -79,8 +78,7 @@ TINYASYNC_NOINL uint64_t foo() {
 	return total;
 }
 
-TINYASYNC_NOINL uint64_t foo2() {
-    uint64_t N = 10;
+TINYASYNC_NOINL uint64_t foo2(uint64_t N) {
 	uint64_t total = 0;
 	Generator<uint64_t> gen = generator(N);
 	for (; gen.next();) {
