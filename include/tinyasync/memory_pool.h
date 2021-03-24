@@ -13,9 +13,9 @@
 #include <experimental/memory_resource>
 namespace std {
     namespace pmr {
+        using std::experimental::pmr::memory_resource;
         using std::experimental::pmr::get_default_resource;
         using std::experimental::pmr::set_default_resource;
-        using std::experimental::pmr::memory_resource;
         using std::experimental::pmr::new_delete_resource;
     }
 }
@@ -541,6 +541,58 @@ namespace tinyasync
                 cur->m_size = encode_size;
                 pool->add_free_block(cur, order);
             }
+        }
+    };
+
+
+    template<std::size_t Nbytes>
+    struct StackfulPool : std::pmr::memory_resource {
+        char m_buffer[Nbytes];
+        std::size_t m_size = 0;
+
+        virtual void* do_allocate(size_t bytes, size_t alignment) {
+            
+            auto old_size = m_size;
+            void *p = m_buffer + old_size;
+            auto esize = Nbytes - old_size;
+
+            if(alignment <= alignof(std::size_t)) {
+                alignment = alignof(std::size_t);
+
+                auto old_p = p;
+                p = (void*)(((uintptr_t)p - 1 + alignment) & -alignment);
+                auto new_size =  old_size + ((uintptr_t)p - (uintptr_t)old_p) + sizeof(std::size_t) + bytes;
+
+                if(new_size <= Nbytes) {
+                    *(std::size_t*)p = old_size;
+                    m_size = new_size;
+                    return (std::size_t*)p + 1;
+                }
+            } else {
+                auto old_p = p;
+                p = (void*)(((uintptr_t)p - 1 + alignment) & -alignment);
+                auto gap = ((uintptr_t)p - (uintptr_t)old_p);
+                auto new_size =  old_size + gap  + bytes;
+
+                if(gap >= sizeof(std::size_t)) {
+                    *((std::size_t*)p-1) = old_size;
+                    m_size = new_size;
+                    return p;
+                } else if(new_size + alignment <= Nbytes) {
+                    p = (char*)p + alignment;
+                    *((std::size_t*)p-1) = old_size;
+                    m_size = new_size + alignment;
+                    return p;
+                }
+            }
+            return nullptr;
+        }
+        virtual void do_deallocate(void* p, size_t bytes, size_t alignment) {
+            auto *psize = (std::size_t*)p-1;
+            m_size = *psize;
+        }
+        virtual bool do_is_equal(memory_resource const &r) const noexcept {
+            return this == &r;
         }
     };
 

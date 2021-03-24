@@ -173,8 +173,8 @@ int main()
         test_memory_resource("PoolResource", &pr);
         test_memory_resource("malloc_resource", &mmr);
         test_memory_resource("Fix", &fix);
-        test_memory_resource("new_delete_resource", std::pmr::new_delete_resource());
 #if !defined(__clang__)
+        test_memory_resource("new_delete_resource", std::pmr::new_delete_resource());
         test_memory_resource("synchronized_pool_resource", &spr);
         test_memory_resource("monotonic_buffer_resource", &mbr);
 #endif        

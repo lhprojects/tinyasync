@@ -209,7 +209,7 @@ namespace tinyasync
         using spinlock_type = DefaultSpinLock;
         static constexpr bool multiple_thread = true;
         static std::pmr::memory_resource *get_memory_resource() {
-            return std::pmr::get_default_resource();
+            return get_default_resource();
         }
     };
 

@@ -12,8 +12,9 @@ namespace std {
     using std::experimental::coroutine_handle;
     using std::experimental::noop_coroutine;
     namespace pmr {
-        using std::experimental::pmr::get_default_resource;
         using std::experimental::pmr::memory_resource;
+        using std::experimental::pmr::get_default_resource;
+        using std::experimental::pmr::set_default_resource;
     }
 }
 #else
@@ -107,6 +108,25 @@ using SystemHandle = int;
 // Coroutine Basics
 
 namespace tinyasync {
+    
+    inline std::atomic<std::pmr::memory_resource *> g_default_resource;
+
+    inline std::pmr::memory_resource *get_default_resource() {
+        auto pmr = g_default_resource.load(std::memory_order_acquire);
+        if(!pmr) {
+#if defined(__clang__)
+            assert(false);
+#else 
+            pmr = std::pmr::get_default_resource();
+#endif
+        }    
+        return pmr;
+    }
+
+    inline std::pmr::memory_resource *set_default_resource(std::pmr::memory_resource *ptr) {
+        return g_default_resource.exchange(ptr);
+    }
+
 
     std::string vformat(char const* fmt, va_list args)
     {

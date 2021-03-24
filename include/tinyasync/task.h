@@ -10,8 +10,38 @@ namespace tinyasync {
 
     template<class Result>
     class Generator {
+
         struct Promise
         {
+
+            inline static void * do_alloc(std::size_t size, std::pmr::memory_resource *memory_resource)
+            {
+                // put allocator at the end of the frame
+                auto constexpr memory_resource_size =  sizeof(std::pmr::memory_resource*);
+                auto constexpr memory_resource_align =  alignof(std::pmr::memory_resource*);
+                auto memory_resource_offset = (size  + memory_resource_align - 1u) & ~(memory_resource_align - 1u);
+
+                auto ptr = memory_resource->allocate(memory_resource_offset + memory_resource_size);
+                new((char*)ptr + memory_resource_offset) decltype(memory_resource)(memory_resource);
+                return ptr;
+            }
+
+            static void* operator new(std::size_t size)
+            {
+                auto ptr = do_alloc(size, get_default_resource());
+                return ptr;
+            }
+
+            static void operator delete(void* ptr, std::size_t size)
+            {
+                auto constexpr memory_resource_size =  sizeof(std::pmr::memory_resource*);
+                auto constexpr memory_resource_align =  alignof(std::pmr::memory_resource*);
+                auto memory_resource_offset = (size  + memory_resource_align - 1u) & ~(memory_resource_align - 1u);
+
+                auto memory_resource = *(std::pmr::memory_resource**)((char*)ptr + memory_resource_offset);
+                memory_resource->deallocate(ptr, size);
+            }
+
             std::suspend_always initial_suspend() { return{}; }
             std::suspend_always final_suspend() noexcept { return{}; }
             void unhandled_exception() { throw; }
@@ -88,7 +118,7 @@ namespace tinyasync {
 
         template<class T>
         static void *alloc_1(std::size_t size, T &&) {
-            auto memory_resource = std::pmr::get_default_resource();
+            auto memory_resource = get_default_resource();
             auto ptr = do_alloc(size, memory_resource);
             return ptr;
         }

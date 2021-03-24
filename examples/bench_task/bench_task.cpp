@@ -1,4 +1,6 @@
+
 #ifndef TINYASYNC_BASICS_H
+
 #include <tinyasync/basics.h>
 #include <tinyasync/task.h>
 #include <tinyasync/memory_pool.h>
@@ -6,6 +8,8 @@
 
 #include <chrono>
 using namespace tinyasync;
+
+
 Task<uint64_t> task_generator(uint64_t n)
 {
 	for (uint64_t i = 0; i < n; ++i) {
@@ -88,23 +92,28 @@ TINYASYNC_NOINL uint64_t foo2() {
 int main(int argc, char *[])
 {
 
-	uint64_t nCreate = 10000;
-    uint64_t N = 10000;
+	uint64_t nCreate = 1000;
+    uint64_t N = 5;
 	N += argc;
 	uint64_t d = nCreate;
 
+	StackfulPool<1000> sb;
+	tinyasync::set_default_resource(&sb);
+	
+	if(true) {
 
-    timeit([&]() {  
-		uint64_t total = 0;
-		for(uint64_t r = 0; r < nCreate; ++r) {
-			Task<uint64_t> task = task_generator(N);
-			for (; task.resume(); ) {
-				auto x = task.result();
-				total += ((total >> 1) + x);
+		timeit([&]() {  
+			uint64_t total = 0;
+			for(uint64_t r = 0; r < nCreate; ++r) {
+				Task<uint64_t> task = task_generator(N);
+				for (; task.resume(); ) {
+					auto x = task.result();
+					total += ((total >> 1) + x);
+				}
 			}
-		}
-		return total;
-    }, d, "task");
+			return total;
+		}, d, "task");
+	}
 
     timeit([&]() {  
 		uint64_t total = 0;
@@ -127,7 +136,7 @@ int main(int argc, char *[])
 			}
 		}
 		return total;
-    }, d, "iter");
+    }, d, "iter(no-inline)");
 
     timeit([&]() {  
         uint64_t total = 0;
