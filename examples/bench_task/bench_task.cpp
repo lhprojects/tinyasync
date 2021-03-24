@@ -87,6 +87,16 @@ TINYASYNC_NOINL uint64_t foo2(uint64_t N) {
 	}
 	return total;
 }
+
+TINYASYNC_NOINL uint64_t foo3(uint64_t N) {
+	uint64_t total = 0;
+	Generator<uint64_t> gen = generator(N);
+	for (auto x: gen) {
+		total += ((total >> 1) + x);
+	}
+	return total;
+}
+
 int main(int argc, char *[])
 {
 
@@ -98,20 +108,17 @@ int main(int argc, char *[])
 	StackfulPool<1000> sb;
 	tinyasync::set_default_resource(&sb);
 	
-	if(true) {
-
-		timeit([&]() {  
-			uint64_t total = 0;
-			for(uint64_t r = 0; r < nCreate; ++r) {
-				Task<uint64_t> task = task_generator(N);
-				for (; task.resume(); ) {
-					auto x = task.result();
-					total += ((total >> 1) + x);
-				}
+	timeit([&]() {  
+		uint64_t total = 0;
+		for(uint64_t r = 0; r < nCreate; ++r) {
+			Task<uint64_t> task = task_generator(N);
+			for (; task.resume(); ) {
+				auto x = task.result();
+				total += ((total >> 1) + x);
 			}
-			return total;
-		}, d, "task");
-	}
+		}
+		return total;
+	}, d, "task");
 
     timeit([&]() {  
 		uint64_t total = 0;
