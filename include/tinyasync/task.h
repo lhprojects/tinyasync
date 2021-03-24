@@ -67,12 +67,15 @@ namespace tinyasync {
 
         Generator(std::coroutine_handle<Promise> coro) : m_coro(coro) {
         }
-        Generator(Generator &&) = default;
-        Generator(Generator const &) = delete;
-        Generator &operator=(Generator &&) = default;
+        Generator(Generator &&r) : m_coro(r.m_coro){
+            r.m_coro = nullptr;
+        }
+        Generator(Generator const &) = delete;        
+        Generator &operator=(Generator &&r) = delete;
         Generator operator=(Generator const &) = delete;
         ~Generator() {
-            m_coro.destroy();            
+            if(m_coro)
+                m_coro.destroy();            
         }
 
 
