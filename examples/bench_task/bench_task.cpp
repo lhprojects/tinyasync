@@ -90,8 +90,8 @@ TINYASYNC_NOINL uint64_t foo2(uint64_t N) {
 int main(int argc, char *[])
 {
 
-	uint64_t nCreate = 1000;
-    uint64_t N = 5;
+	uint64_t nCreate = 10000;
+    uint64_t N = 10000;
 	N += argc;
 	uint64_t d = nCreate;
 
@@ -119,6 +119,17 @@ int main(int argc, char *[])
 			Generator<uint64_t> gen = generator(N);
 			for (; gen.next(); ) {
 				auto x = gen.get();
+				total += ((total >> 1) + x);
+			}
+		}
+		return total;
+    }, d, "generator");
+
+    timeit([&]() {  
+		uint64_t total = 0;
+		for(uint64_t r = 0; r < nCreate; ++r) {
+			Generator<uint64_t> gen = generator(N);
+			for (auto x: gen) {
 				total += ((total >> 1) + x);
 			}
 		}

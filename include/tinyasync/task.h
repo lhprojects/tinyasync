@@ -89,6 +89,38 @@ namespace tinyasync {
             return promise.m_result;
         }
 
+        struct IteratorEnd {
+        };
+
+        struct Iterator {
+            std::coroutine_handle<Promise> m_coro;
+            Iterator(std::coroutine_handle<Promise> coro) : m_coro(coro) { }
+
+            Result &operator*() {
+                auto &promise = m_coro.promise();
+                return promise.m_result;
+            }
+
+            Iterator &operator++() {
+                m_coro.resume();
+                return *this;
+            }
+
+            bool operator==(IteratorEnd) const {
+                return m_coro.done();
+            }
+
+        };
+
+        Iterator begin() {
+            m_coro.resume();
+            return m_coro;
+        }
+
+        IteratorEnd end() {
+            return {};
+        }
+
     private:
         std::coroutine_handle<Promise> m_coro;
 
