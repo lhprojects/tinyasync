@@ -101,7 +101,7 @@ int main(int argc, char *[])
 {
 
 	uint64_t nCreate = 10000;
-    uint64_t N = 10000;
+    uint64_t N = 1000;
 	N += argc;
 	uint64_t d = nCreate;
 

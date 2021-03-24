@@ -44,6 +44,16 @@ Note:
 * Performance is tittle different. Recommend you always to use multiple thread version.
 Single thread version can not satisfy your need for real world application.
 
+## Some note on compilers
+
+* MSVC: The code has not been compile on MSVC for a while, so I don't know much about the quality of generated code.
+ Exactly speaking, it is about the Windows API not the compiler.
+* gcc: The front end of g++ supports coroutine well, but the generated code is not very optimial (compared to clang and expectation).
+It seems that the g++-10 can't inline the coroutine and the dynamic memory allocation can't be eliminated.
+* clang: The generated code is good. It can inline the coroutine and dynamic memory allocation can be eliminated.
+But they are not always guaranteed. The dynamic memory allocation elision will not happen for deep (e.g. three) nested coroutine.
+For the geneator use case, the generated code is about 20%-50% slower than naive code (see bench_task), in which it does little work for each iteration.
+The slowdown should be less significant, if you have some real work to do in each iteration.
 
 ## Examples
 
