@@ -10,50 +10,21 @@
 using namespace tinyasync;
 
 
-Task<uint64_t> task_generator(uint64_t n)
+Task<uint64_t> task(uint64_t n)
 {
-	for (uint64_t i = 0; i < n; ++i) {
-		co_yield i;
+	if(n == 0) {
+		co_return 0;
 	}
+	co_return (co_await task(n - 1)) + 1;
 }
 
-Generator<uint64_t> generator(uint64_t n)
+TINYASYNC_NOINL uint64_t func(uint64_t n)
 {
-	for (uint64_t i = 0; i < n; ++i) {
-		co_yield i;
+	if(n == 0) {
+		return 0;
 	}
+	return func(n - 1) + 1;
 }
-
-struct Iter
-{
-	uint64_t v;
-	uint64_t n;
-
-	Iter(uint64_t n) : n(n)
-	{
-
-		v = 0;
-	}
-	void next()
-	{
-		v += 1;
-	}
-
-	uint64_t get()
-	{
-		return v;
-	}
-
-	bool done()
-	{
-		return v == n;
-	}
-
-	~Iter() {
-
-	}
-
-};
 
 template<class T>
 void timeit(T t, uint64_t n, char const *title)
@@ -68,71 +39,19 @@ void timeit(T t, uint64_t n, char const *title)
 
 }
 
-#define UPDATE_TOTAL() total = ((total >> 1) + x)
-//#define UPDATE_TOTAL() total = ((total >> 1) + x*2)
-//#define UPDATE_TOTAL() total += ((total >> 1) + x)
-
-TINYASYNC_NOINL uint64_t foo(uint64_t N) {
-	uint64_t total = 0;
-	Task<uint64_t> task = task_generator(N);
-	for (; task.resume(); ) {
-		auto x = task.result();
-		UPDATE_TOTAL();
-	}
-	return total;
-}
-
-TINYASYNC_NOINL uint64_t foo2(uint64_t N) {
-	uint64_t total = 0;
-	Generator<uint64_t> gen = generator(N);
-	for (; gen.next();) {
-		auto x = gen.get();
-		UPDATE_TOTAL();
-	}
-	return total;
-}
-
-TINYASYNC_NOINL uint64_t foo3(uint64_t N) {
-	uint64_t total = 0;
-	Generator<uint64_t> gen = generator(N);
-	for (auto x: gen) {
-		UPDATE_TOTAL();
-	}
-	return total;
-}
-
 __attribute__((aligned(4096)))
 int main(int argc, char *[])
 {
 
-	uint64_t nCreate = 1000000;
-    uint64_t N = 5;
-	N += argc;
-	uint64_t d = nCreate;
-
-	StackfulPool<1000> sb;
-	tinyasync::set_default_resource(&sb);
-	
-	timeit([&]() {  
-		uint64_t total = 0;
-		for(uint64_t r = 0; r < nCreate; ++r) {
-			Task<uint64_t> task = task_generator(N);
-			for (; task.resume(); ) {
-				auto x = task.result();
-				UPDATE_TOTAL();
-			}
-		}
-		return total;
-	}, d, "task");
+	std::size_t nCreate = 10000;
+	std::size_t N = 100;
+	auto d = nCreate * N;
 
     timeit([&]() {  
 		uint64_t total = 0;
 		for(uint64_t r = 0; r < nCreate; ++r) {
-			Generator<uint64_t> gen = generator(N);
-			for (; gen.next(); ) {
-				auto x = gen.get();
-				UPDATE_TOTAL();
-			}
+			Task<uint64_t> gen = task(N);
+			gen.resume();
 		}
 		return total;
     }, d, "generator");
@@ -140,36 +59,10 @@ int main(int argc, char *[])
     timeit([&]() {  
 		uint64_t total = 0;
 		for(uint64_t r = 0; r < nCreate; ++r) {
-			Generator<uint64_t> gen = generator(N);
-			for (auto x: gen) {
-				UPDATE_TOTAL();
-			}
+			total += func(N);
 		}
 		return total;
-    }, d, "generator");
-
-    timeit([&]() {  
-		uint64_t total = 0;
-		for(uint64_t r = 0; r < nCreate; ++r) {
-			for (Iter iter(N); !iter.done(); iter.next()) {
-				uint64_t x = iter.get();
-				UPDATE_TOTAL();
-			}
-		}
-		return total;
-    }, d, "iter(no-inline)");
-
-    timeit([&]() {  
-        uint64_t total = 0;
-        uint64_t n = N;
-		for(uint64_t r = 0; r < nCreate; ++r) {
-			for (uint64_t i = 0; i < n; ++i) {
-				uint64_t x = i;
-				UPDATE_TOTAL();
-			}
-		}
-        return total;
-    }, d, "naive");
+    }, d, "func(no-inline)");
 
 
 

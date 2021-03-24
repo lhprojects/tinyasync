@@ -28,6 +28,7 @@ set(HEADER_FILES
 )
 
 
+add_subdirectory("bench_generator")
 add_subdirectory("bench_task")
 add_subdirectory("chatroom_server")
 add_subdirectory("condition_variable")

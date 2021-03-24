@@ -137,7 +137,6 @@ namespace tinyasync {
         ResumeResult* m_resume_result;
         bool m_dangling = false;
 
-
         inline static void * do_alloc(std::size_t size, std::pmr::memory_resource *memory_resource)
         {
             // put allocator at the end of the frame
@@ -682,7 +681,7 @@ namespace tinyasync {
     {
         TINYASYNC_GUARD("resume_coroutine(): ");
         TINYASYNC_LOG("resume `%s`", c_name(coroutine));
-        assert(coroutine);
+        TINYASYNC_ASSERT(coroutine);
         ResumeResult res;
 
         // awiaters except Task::Awaiter don't touch `m_return_from`
