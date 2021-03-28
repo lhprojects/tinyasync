@@ -227,6 +227,7 @@ namespace tinyasync {
 
 #endif
 
+#define TINYASYNC_RETHROW() throw
 
 #define TINYASYNC_NODISCARD [[nodiscard]]
 // compiler related

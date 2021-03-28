@@ -130,12 +130,29 @@ namespace tinyasync {
     class Task;
 
 
+    struct ExceptionPtrWrapper
+    {
+
+        std::exception_ptr &exception() {
+            return (std::exception_ptr &)m_exception;
+        }
+
+        ExceptionPtrWrapper() {
+            new(m_exception) std::exception_ptr();
+        }        
+
+        ~ExceptionPtrWrapper()
+        {
+        }
+    private:
+        alignas(std::exception_ptr) char m_exception[sizeof(std::exception_ptr)];
+    };
+
     class TaskPromiseBase {
     public:
-        std::exception_ptr m_unhandled_exception = nullptr;
-        std::coroutine_handle<TaskPromiseBase> m_continuation = nullptr;
-        ResumeResult* m_resume_result;
-        bool m_dangling = false;
+        // resumer to destruct exception
+        ExceptionPtrWrapper m_unhandled_exception;
+        std::coroutine_handle<void> m_continuation;
 
         inline static void * do_alloc(std::size_t size, std::pmr::memory_resource *memory_resource)
         {
@@ -197,21 +214,12 @@ namespace tinyasync {
             memory_resource->deallocate(ptr, size);
         }
 
-        bool is_dangling() const noexcept
-        {
-            return m_dangling;
-        }
-
         std::coroutine_handle<TaskPromiseBase> coroutine_handle_base() noexcept
         {
             return std::coroutine_handle<TaskPromiseBase>::from_promise(*this);
         }
 
 
-    };
-
-    struct ResumeResult {
-        std::coroutine_handle<TaskPromiseBase> m_return_from;
     };
 
 
@@ -302,61 +310,30 @@ namespace tinyasync {
 
         struct FinalAwaiter : std::suspend_always
         {
-            promise_type* m_promise;
-
-            FinalAwaiter(promise_type& promise) noexcept : m_promise(&promise)
-            {
-            }
-
             bool await_ready() noexcept { return false; }
 
             std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) const noexcept
             {
-                TINYASYNC_GUARD("Task.FinalAwaiter.await_suspend(): ");
-                TINYASYNC_LOG("`%s` suspended", c_name(h));
+                auto &promise = h.promise();
+                auto continuum = promise.m_continuation;
+                return continuum;
 
-                auto *promise = m_promise;
-                auto continuum = promise->m_continuation;
-                if (continuum) {
-                    // co_await ...
-                    // back to awaiter
-                    TINYASYNC_LOG("resume its continuum `%s`", c_name(m_promise->m_continuation));
-
-                    continuum.promise().m_resume_result = h.promise().m_resume_result;
-                    return continuum;
-                } else {
-                    // directly .resume()
-                    // back to resumer
-                    TINYASYNC_LOG("resume its continuum `%s` (caller/resumer)", c_name(m_promise->m_continuation));
-
-                    // return to caller!
-                    // we need to set last coroutine
-                    promise->m_resume_result->m_return_from = h.promise().coroutine_handle_base();
-                    return std::noop_coroutine();
-                }
-    }
+            }
 
             void await_resume() const noexcept
             {
-                TINYASYNC_GUARD("Task(`?`).FinalAwaiter.await_resume(): ");
-                TINYASYNC_LOG("Bug!");
-                // never reach here
                 assert(false);
             }
         };
 
         FinalAwaiter final_suspend() noexcept
         {
-            return { *this };
+            return {};
         }
 
         void unhandled_exception()
         {
-            auto h = this->coroutine_handle();
-            TINYASYNC_GUARD("Task(`%s`).Promise.unhandled_exception(): ", c_name(h));
-            TINYASYNC_LOG("%s", to_string(std::current_exception()).c_str());
-            (void)h;
-            m_unhandled_exception = std::current_exception();
+            m_unhandled_exception.exception() = std::current_exception();
         }
 
     };
@@ -426,23 +403,10 @@ namespace tinyasync {
             }
 
             template<class Promise>
-            std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> suspend_coroutine) {
-                std::coroutine_handle<TaskPromiseBase> h = suspend_coroutine.promise().coroutine_handle_base();
-                return await_suspend(h);
-            }
-
-            std::coroutine_handle<> await_suspend(std::coroutine_handle<TaskPromiseBase> suspend_coroutine)
+            std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> awaiting_coro)
             {
-                TINYASYNC_GUARD("Task(`%s`).Awaiter.await_suspend(): ", c_name(m_sub_coroutine));
-
-                TINYASYNC_LOG("set continuum of `%s` to `%s`", c_name(m_sub_coroutine), c_name(suspend_coroutine));
-                TINYASYNC_LOG("`%s` suspended, resume `%s`", c_name(suspend_coroutine), c_name(m_sub_coroutine));
-
-                TINYASYNC_ASSERT(!m_sub_coroutine.done());
-
                 auto sub_coroutine = m_sub_coroutine;
-                sub_coroutine.promise().m_continuation = suspend_coroutine;
-                sub_coroutine.promise().m_resume_result = suspend_coroutine.promise().m_resume_result;
+                sub_coroutine.promise().m_continuation = awaiting_coro;
                 return sub_coroutine;
             }
 
@@ -464,23 +428,10 @@ namespace tinyasync {
             }
 
             template<class Promise>
-            void await_suspend(std::coroutine_handle<Promise> suspend_coroutine) {
-                std::coroutine_handle<TaskPromiseBase> h = suspend_coroutine.promise().coroutine_handle_base();
-                await_suspend(h);
-            }
-
-            void await_suspend(std::coroutine_handle<TaskPromiseBase> suspend_coroutine)
+            void await_suspend(std::coroutine_handle<Promise> awaiting_coro)
             {
-                TINYASYNC_GUARD("Task(`%s`).Awaiter.await_suspend(): ", c_name(m_sub_coroutine));
-
-                TINYASYNC_LOG("set continuum of `%s` to `%s`", c_name(m_sub_coroutine), c_name(suspend_coroutine));
-                TINYASYNC_LOG("`%s` suspended, resume `%s`", c_name(suspend_coroutine), c_name(m_sub_coroutine));
-
-                TINYASYNC_ASSERT(!m_sub_coroutine.done());
-
                 auto sub_coroutine = m_sub_coroutine;
-                sub_coroutine.promise().m_continuation = suspend_coroutine;
-                sub_coroutine.promise().m_resume_result = suspend_coroutine.promise().m_resume_result;
+                sub_coroutine.promise().m_continuation = awaiting_coro;
             }
 
             Result await_resume();
@@ -569,82 +520,6 @@ namespace tinyasync {
         Task& operator=(Task const& r) = delete;
     };
 
-
-    inline void destroy_and_throw_if_necessary_impl(std::coroutine_handle<TaskPromiseBase> coroutine, char const* func)
-    {
-
-        TaskPromiseBase& promise = coroutine.promise();
-
-        TINYASYNC_GUARD("`destroy_and_throw_if_necessary(): ");
-        TINYASYNC_LOG("`%s` done", c_name(coroutine));
-
-        if (coroutine.promise().m_unhandled_exception) TINYASYNC_UNLIKELY {
-                auto name_ = c_name(coroutine);
-            // exception is reference counted
-            auto unhandled_exception = promise.m_unhandled_exception;
-
-            if (promise.is_dangling()) TINYASYNC_UNLIKELY {
-                coroutine.destroy();
-            }
-
-            try {
-                std::rethrow_exception(unhandled_exception);
-            } catch (...) {
-            std::throw_with_nested(std::runtime_error(format("in function <%s>: `%s` thrown, rethrow", func, name_)));
-            }
-
-        } else {
-            if (promise.is_dangling()) TINYASYNC_UNLIKELY {
-                coroutine.destroy();
-            }
-        }
-    }
-
-
-    // if coroutine is done
-    //     if coroutine is dangling coroutine, coroutine is detroyed
-    //     and if coroutine has unhandled_exception, rethrow
-    //     return true
-    // else
-    //     return false
-    inline bool destroy_and_throw_if_necessary(std::coroutine_handle<TaskPromiseBase> coroutine, char const* func)
-    {
-        if (coroutine.done()) TINYASYNC_UNLIKELY {
-            destroy_and_throw_if_necessary_impl(coroutine, func);
-            return true;
-        }
-        return false;
-    }
-
-    inline void throw_impl(std::coroutine_handle<TaskPromiseBase> coroutine, char const* func)
-    {
-
-        TaskPromiseBase& promise = coroutine.promise();
-        TINYASYNC_GUARD("`throw_if_necessary(): ");
-        TINYASYNC_LOG("`%s` exception", c_name(coroutine));
-        auto name_ = c_name(coroutine);
-        // exception is reference counted
-        auto unhandled_exception = promise.m_unhandled_exception;
-        try {
-            std::rethrow_exception(promise.m_unhandled_exception);
-        }
-        catch (...) {
-            std::throw_with_nested(std::runtime_error(format("in function <%s>: `%s` thrown, rethrow", func, name_)));
-        }
-    }
-
-    inline bool throw_if_necessary(std::coroutine_handle<TaskPromiseBase> coroutine, char const* func)
-    {
-
-        TaskPromiseBase& promise = coroutine.promise();
-        if (coroutine.promise().m_unhandled_exception) TINYASYNC_UNLIKELY {
-            throw_impl(coroutine, func);
-            return true;
-        }
-        return false;
-
-    }
-
     template<class Result>
     Task<Result> TaskPromise<Result>::get_return_object()
     {
@@ -654,36 +529,95 @@ namespace tinyasync {
         return { h };
     }
 
-    inline bool resume_coroutine(std::coroutine_handle<TaskPromiseBase> coroutine, char const* func = "")
-    {
-        TINYASYNC_GUARD("resume_coroutine(): ");
-        TINYASYNC_LOG("resume `%s`", c_name(coroutine));
-        TINYASYNC_ASSERT(coroutine);
-        ResumeResult res;
+    struct DscExpPtr {
 
-        // awiaters except Task::Awaiter don't touch `m_return_from`
-        // If no coroutine switch, the m_return_from will not change,
-        // initialize it with first coroutine.
-        res.m_return_from = coroutine;
+        std::exception_ptr *m_e;
+        ~DscExpPtr() {
+            *m_e = nullptr;
+        }
+    };
 
-        coroutine.promise().m_resume_result = &res;
-        coroutine.resume();
+    [[noreturn]]
+    inline void reset_and_throw_exception(std::exception_ptr &e) {
+        DscExpPtr dep;
+        dep.m_e = &e;
 
-        TINYASYNC_LOG("resumed from `%s`", c_name(res.m_return_from));
-        return !destroy_and_throw_if_necessary(res.m_return_from, func);
+        std::rethrow_exception(e);
     }
 
-#define TINYASYNC_RESUME(coroutine)  resume_coroutine(coroutine, TINYASYNC_FUNCNAME)
+    inline void resume_coroutine_task(std::coroutine_handle<TaskPromiseBase> coroutine)
+    {
+        coroutine.resume();
+        if(coroutine.promise().m_unhandled_exception.exception()) TINYASYNC_UNLIKELY {
+            reset_and_throw_exception(coroutine.promise().m_unhandled_exception.exception());
+        }
+    }
 
+    void resume_coroutine_callback(std::coroutine_handle<TaskPromiseBase> coroutine)
+    {
+        coroutine.resume();
+        // the last coroutine is not always the same as the resume coroutine
+    }
+
+    // resume a non dangling coroutine
+#define TINYASYNC_RESUME(coroutine)  resume_coroutine_callback(coroutine)
+
+
+    struct SpawnTask {
+
+        struct promise_type : TaskPromiseBase {
+            std::suspend_always initial_suspend() { return {}; }
+            std::suspend_never  final_suspend() noexcept { return {}; }
+
+            void unhandled_exception() {
+                TINYASYNC_RETHROW();
+            }
+            SpawnTask get_return_object() {
+                return {std::coroutine_handle<promise_type>::from_promise(*this)};
+            }
+            void return_void() { }
+        };
+
+        SpawnTask(std::coroutine_handle<promise_type> h) : m_handle(h) {   
+        }
+        std::coroutine_handle<promise_type> m_handle;
+    };
+
+    [[noreturn]]
+    void destroy_and_throw(std::coroutine_handle<TaskPromiseBase> task) {
+        auto &exception = task.promise().m_unhandled_exception.exception();
+        auto e = exception;
+        exception = nullptr;
+        task.destroy();
+        std::rethrow_exception(e);
+    }
+
+    // body of spawn_task will not suspend
+    SpawnTask spawn_task(std::coroutine_handle<TaskPromiseBase> task)
+    {
+        auto &exception = task.promise().m_unhandled_exception.exception();
+        if(!exception) TINYASYNC_LIKELY {
+            task.destroy();
+        } else {
+            destroy_and_throw(task);
+        }
+        co_return;
+    }
 
     // you can't get result of task here
     // so use Task<void>
-    inline void co_spawn(Task<void> task)
+    TINYASYNC_NOINL inline void co_spawn(Task<void> task)
     {
         TINYASYNC_GUARD("co_spawn(): ");
+
         auto coroutine = task.coroutine_handle_base();
-        task.detach();
-        TINYASYNC_RESUME(coroutine);
+        task.release();
+
+        auto spawn_task_ = spawn_task(coroutine);
+        auto spawn_coro = spawn_task_.m_handle;
+
+        coroutine.promise().m_continuation = std::coroutine_handle<TaskPromiseBase>::from_promise(spawn_coro.promise());
+        resume_coroutine_task(coroutine);
     }
 
 
@@ -694,7 +628,8 @@ namespace tinyasync {
     template<class Result>
     inline bool Task<Result>::resume()
     {
-        return resume_coroutine(this->coroutine_handle_base());
+        resume_coroutine_task(this->coroutine_handle_base());
+        return !coroutine_handle().done();
     }
 
     template<class Result>
@@ -703,8 +638,12 @@ namespace tinyasync {
         auto sub_coroutine = m_sub_coroutine;
         TINYASYNC_GUARD("Task(`%s`).Awaiter.await_resume(): ", c_name(sub_coroutine));
         TINYASYNC_ASSERT(sub_coroutine.done());
-        auto base_coro = sub_coroutine.promise().coroutine_handle_base();
-        throw_if_necessary(base_coro, TINYASYNC_FUNCNAME);        
+        auto &promise = sub_coroutine.promise();
+        
+        if(promise.m_unhandled_exception.exception()) {
+            reset_and_throw_exception(promise.m_unhandled_exception.exception());
+        }
+
         if constexpr (!std::is_same_v<void, Result>) {
             return std::move(sub_coroutine.promise().m_result);
         }
@@ -716,8 +655,12 @@ namespace tinyasync {
         auto sub_coroutine = m_sub_coroutine;
         TINYASYNC_GUARD("Task(`%s`).JoinAwaiter.await_resume(): ", c_name(sub_coroutine));
         TINYASYNC_ASSERT(sub_coroutine.done());
-        auto base_coro = sub_coroutine.promise().coroutine_handle_base();
-        throw_if_necessary(base_coro, TINYASYNC_FUNCNAME);        
+        auto &promise = sub_coroutine.promise();
+
+        if(promise.m_unhandled_exception.exception()) {
+            reset_and_throw_exception(promise.m_unhandled_exception.exception());
+        }
+         
         if constexpr (!std::is_same_v<void, Result>) {
             return std::move(sub_coroutine.promise().m_result);
         }
