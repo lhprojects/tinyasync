@@ -294,33 +294,10 @@ namespace tinyasync {
             return {};
         }
 
-        struct InitialAwaityer : std::suspend_always
+
+        std::suspend_always initial_suspend()
         {
-            std::coroutine_handle<promise_type> m_sub_coroutine;
-
-            InitialAwaityer(std::coroutine_handle<promise_type> h) : m_sub_coroutine(h)
-            {
-            }
-
-            void await_suspend(std::coroutine_handle<promise_type> suspended_coroutine) const noexcept
-            {
-                TINYASYNC_GUARD("Task(`%s`).InitialAwaityer.await_suspend(): ", c_name(m_sub_coroutine));
-                TINYASYNC_LOG("`%s` suspended, back to caller", c_name(suspended_coroutine));
-                // return to caller
-                (void)suspended_coroutine;
-            }
-
-            void await_resume() const noexcept
-            {
-                TINYASYNC_GUARD("Task(`%s`).InitialAwaityer.await_resume(): ", c_name(m_sub_coroutine));
-                TINYASYNC_LOG("`%s` resumed", c_name(m_sub_coroutine));
-            }
-        };
-
-
-        InitialAwaityer initial_suspend()
-        {
-            return { coroutine_handle() };
+            return { };
         }
 
         struct FinalAwaiter : std::suspend_always
