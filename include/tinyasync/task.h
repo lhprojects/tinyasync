@@ -523,9 +523,8 @@ namespace tinyasync {
     template<class Result>
     Task<Result> TaskPromise<Result>::get_return_object()
     {
+        this->m_continuation = std::noop_coroutine();
         auto h = this->coroutine_handle();
-        TINYASYNC_GUARD("Task(`%s`).Promise.get_return_object(): ", c_name(h));
-        TINYASYNC_LOG("");
         return { h };
     }
 
