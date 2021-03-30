@@ -6,8 +6,7 @@
 namespace tinyasync {
 
     struct ResumeResult;
-
-
+    
     template<class Result>
     class Generator {
 
@@ -148,160 +147,20 @@ namespace tinyasync {
         alignas(std::exception_ptr) char m_exception[sizeof(std::exception_ptr)];
     };
 
-    class TaskPromiseBase {
+    struct TaskPromiseBase {
     public:
         // resumer to destruct exception
         ExceptionPtrWrapper m_unhandled_exception;
         std::coroutine_handle<void> m_continuation;
-
-        inline static void * do_alloc(std::size_t size, std::pmr::memory_resource *memory_resource)
-        {
-            // put allocator at the end of the frame
-            auto constexpr memory_resource_size =  sizeof(std::pmr::memory_resource*);
-            auto constexpr memory_resource_align =  alignof(std::pmr::memory_resource*);
-            auto memory_resource_offset = (size  + memory_resource_align - 1u) & ~(memory_resource_align - 1u);
-
-            auto ptr = memory_resource->allocate(memory_resource_offset + memory_resource_size);
-            new((char*)ptr + memory_resource_offset) decltype(memory_resource)(memory_resource);
-            return ptr;
-        }
-
-
-        template<class T>
-        static void *alloc_1(std::size_t size, T &&) {
-            auto memory_resource = get_default_resource();
-            auto ptr = do_alloc(size, memory_resource);
-            return ptr;
-        }
-
-        template<class T>
-        static auto alloc_1(std::size_t size, T &a) -> std::enable_if_t<
-            std::is_same_v<decltype(std::declval<std::remove_cvref_t<T> >().get_memory_resource_for_task()), std::pmr::memory_resource*>,
-            void*>
-        {
-            auto memory_resource = a.get_memory_resource_for_task();
-            auto ptr = do_alloc(size, memory_resource);
-            return ptr;
-        }
-
-        template<class T, class... Args>
-        static void* operator new(std::size_t size, T && a, Args &&... )
-        {
-            TINYASYNC_GUARD("Task.Promise.operator new(): ");
-            auto ptr = alloc_1(size, a);
-            TINYASYNC_LOG("%d bytes at %p", (int)(size), ptr);
-            return ptr;
-        }
-
-        static void* operator new(std::size_t size)
-        {
-            TINYASYNC_GUARD("Task.Promise.operator new(): ");
-            auto ptr = alloc_1(size, 0);
-            TINYASYNC_LOG("%d bytes at %p", (int)(size), ptr);
-            return ptr;
-        }
-
-        static void operator delete(void* ptr, std::size_t size)
-        {
-            TINYASYNC_GUARD("Task.Promise.operator delete(): ");
-            TINYASYNC_LOG("%d bytes at %p", (int)size, ptr);
-
-            auto constexpr memory_resource_size =  sizeof(std::pmr::memory_resource*);
-            auto constexpr memory_resource_align =  alignof(std::pmr::memory_resource*);
-            auto memory_resource_offset = (size  + memory_resource_align - 1u) & ~(memory_resource_align - 1u);
-
-            auto memory_resource = *(std::pmr::memory_resource**)((char*)ptr + memory_resource_offset);
-            memory_resource->deallocate(ptr, size);
-        }
 
         std::coroutine_handle<TaskPromiseBase> coroutine_handle_base() noexcept
         {
             return std::coroutine_handle<TaskPromiseBase>::from_promise(*this);
         }
 
-
-    };
-
-
-    template<class Result>
-    class PromiseResultMixin  {
-    public:
-        Result m_result;
-
-        PromiseResultMixin() = default;
-        
-        template<class T>
-        void return_value(T &&value)
-        {
-            m_result = std::forward<T>(value);
-        }
-
-        Result &result() {
-            return m_result;
-        }
-        
-    };
-
-    template<>
-    class PromiseResultMixin<void>  {
-    public:
-        void return_void() { }
-    };
-
-    template<class Result>
-    class TaskPromise : public TaskPromiseBase,
-        public PromiseResultMixin<Result>
-    {
-    public:
-        using promise_type = TaskPromise<Result>;
-
-        std::coroutine_handle<promise_type> coroutine_handle() noexcept
-        {
-            return std::coroutine_handle<promise_type>::from_promise(*this);
-        }
-
-        Task<Result> get_return_object();
-
-        template <class... T>
-        TaskPromise(T const &...args)
-        {
-            auto h = std::coroutine_handle<promise_type>::from_promise(*this);
-            TINYASYNC_GUARD("Task(`%s`).Promise.Promise(): ", c_name(h));
-            if (!set_name_r(h, args...)) {
-                TINYASYNC_LOG("");
-            }
-        }
-
-        TaskPromise(promise_type&& r) = delete;
-        TaskPromise(promise_type const& r) = delete;
-        ~TaskPromise()
-        {
-            auto h = std::coroutine_handle<promise_type>::from_promise(*this);
-            TINYASYNC_GUARD("Task(`%s`).Promise.~Promise(): ", c_name(h));
-            TINYASYNC_LOG("");
-        }
-
-        struct YieldValueAwaiter {
-
-            YieldValueAwaiter(promise_type &p) {
-
-            }
-            void await_suspend(std::coroutine_handle<promise_type>) const noexcept
-            {
-            }
-
-            void await_resume() const noexcept
-            {
-            }
-        };
-
-        template<class T>
-        typename std::enable_if<!std::is_same_v<Result, void>||(false&&std::is_same_v<T,void>), std::suspend_always>::type
-        yield_value(T &&v) {
-            this->return_value(std::forward<T>(v));
-            return {};
-        }
-
+        TaskPromiseBase() = default;
+        TaskPromiseBase(TaskPromiseBase&& r) = delete;
+        TaskPromiseBase(TaskPromiseBase const& r) = delete;
 
         std::suspend_always initial_suspend()
         {
@@ -312,7 +171,8 @@ namespace tinyasync {
         {
             bool await_ready() noexcept { return false; }
 
-            std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) const noexcept
+            template<class Promise>
+            std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> h) const noexcept
             {
                 auto &promise = h.promise();
                 auto continuum = promise.m_continuation;
@@ -335,8 +195,128 @@ namespace tinyasync {
         {
             m_unhandled_exception.exception() = std::current_exception();
         }
-
+        
     };
+
+    template<class Result>
+    class PromiseResultMixin  {
+    public:
+        Result m_result;
+
+        PromiseResultMixin() = default;
+        
+        template<class T>
+        std::suspend_always yield_value(T &&v) {
+            m_result = std::forward<T>(v);
+            return {};
+        }
+
+        template<class T>
+        void return_value(T &&value)
+        {
+            m_result = std::forward<T>(value);
+        }
+
+        Result &result()
+        {
+            return m_result;
+        }
+        
+    };
+
+    template<>
+    class PromiseResultMixin<void>  {
+    public:
+        void return_void() { }
+    };
+
+    template<class Result >
+    class TaskPromiseWithResult : public TaskPromiseBase,
+        public PromiseResultMixin<Result>
+    {
+    };
+
+    template<class Alloc>
+    struct TaskPromiseWithAllocator {
+        
+        using allocator_type = typename std::allocator_traits<Alloc>::template rebind_alloc<std::max_align_t>;
+        using allocator_traits = typename std::allocator_traits<Alloc>::template rebind_traits<std::max_align_t>;
+
+        inline static void * do_alloc(std::size_t size, allocator_type &alloc)
+        {
+            // put allocator at the end of the frame       
+            auto constexpr allocator_size =  sizeof(allocator_type);
+            auto constexpr allocator_align =  alignof(allocator_type);
+            auto allocator_offset = (size  + allocator_align - 1u) & ~(allocator_align - 1u);
+
+            auto allocate_size = allocator_offset + allocator_size;
+            auto num = (allocate_size + sizeof(std::max_align_t) - 1)/sizeof(std::max_align_t);
+
+            auto ptr = alloc.allocate(num);
+            new((char*)ptr + allocator_offset) allocator_type(std::move(alloc));
+            return ptr;
+        }
+
+        template<class T, class... Args>
+        static auto 
+        alloc_0(std::size_t size, T &&get_alloc, Args &&...) ->
+        std::enable_if_t<
+            std::is_same_v<std::remove_reference_t<decltype(get_alloc.get_allocator_for_task())>, Alloc>,
+        void*>
+        {
+            allocator_type alloc = get_alloc.get_allocator_for_task();
+            auto ptr = do_alloc(size, alloc);
+            return ptr;
+        }
+
+        template<class... Args>
+        static auto alloc_0(std::size_t size, Args &&...)
+        {
+            auto alloc = allocator_type();
+            auto ptr = do_alloc(size, alloc);
+            return ptr;
+        }
+
+        template<class... Args>
+        static void* operator new(std::size_t size, Args &&... args)
+        {
+            //auto ptr = alloc_0(size, std::forward<Args>(args)...);
+            auto ptr = alloc_0(size, args...);
+            return ptr;
+        }
+
+        static void operator delete(void* ptr, std::size_t size)
+        {
+            auto constexpr allocator_size =  sizeof(allocator_type);
+            auto constexpr allocator_align =  alignof(allocator_type);
+            auto allocator_offset = (size  + allocator_align - 1u) & ~(allocator_align - 1u);
+
+            auto allocate_size = allocator_offset + allocator_size;
+            auto num = (allocate_size + sizeof(std::max_align_t) - 1)/sizeof(std::max_align_t);
+
+            using value_type = typename allocator_traits::value_type;
+            allocator_type alloc = std::move(*(allocator_type*)((char*)ptr + allocator_offset));
+            alloc.deallocate(static_cast<value_type*>(ptr), num);
+        }
+    };
+    
+    template<class Result, class Alloc = std::allocator<std::byte> >
+    struct TaskPromise : TaskPromiseWithResult<Result>, TaskPromiseWithAllocator<Alloc> {
+
+        using promise_type = TaskPromise<Result, Alloc>;
+
+        Task<Result> get_return_object() {
+            this->m_continuation = std::noop_coroutine();
+            auto h = std::coroutine_handle<TaskPromiseWithResult<Result>>::from_promise(this->coroutine_handle().promise());
+            return { h };
+        }
+
+        std::coroutine_handle<promise_type> coroutine_handle() noexcept
+        {
+            return std::coroutine_handle<promise_type>::from_promise(*this);
+        }
+    };
+
 
     template<class T>
     struct AddRef {
@@ -354,12 +334,14 @@ namespace tinyasync {
         return std::coroutine_handle<ToPromise>::from_promise(p);  
     }
       
+
+
     template<class Result = void>
     class TINYASYNC_NODISCARD Task
     {
     public:
-        using promise_type = TaskPromise<Result>;
-        using coroutine_handle_type =  std::coroutine_handle<TaskPromise<Result> >;
+        using promise_type = TaskPromiseWithResult<Result>;
+        using coroutine_handle_type =  std::coroutine_handle<promise_type >;
         using result_type = Result;
     private:
         coroutine_handle_type m_h;
@@ -523,14 +505,6 @@ namespace tinyasync {
         Task(Task const& r) = delete;
         Task& operator=(Task const& r) = delete;
     };
-
-    template<class Result>
-    Task<Result> TaskPromise<Result>::get_return_object()
-    {
-        this->m_continuation = std::noop_coroutine();
-        auto h = this->coroutine_handle();
-        return { h };
-    }
 
     struct DscExpPtr {
 
@@ -697,6 +671,21 @@ namespace tinyasync {
         return { h };
     }
 
+
+    template<class T>
+    std::allocator<std::byte> get_allocator_type(void *);
+
+    template<class T>
+    decltype(std::declval<T>().get_allocator_for_task())
+    get_allocator_type(T *p);
+
+
+    template<class R, class T>
+    struct coroutine_traits_get_allocator_for_task {
+
+        using promise_type = tinyasync::TaskPromise<R, decltype(get_allocator_type<T>((T*)nullptr))>;
+    };
+
 } // tinyasync
 
 namespace std {
@@ -705,6 +694,20 @@ namespace std {
     void swap(tinyasync::Task<R> &l, tinyasync::Task<R> &r) {
         l.swap(r);
     }
+
+    template<class R, class... Args>
+    struct coroutine_traits<tinyasync::Task<R>, Args...> {
+
+        using promise_type = tinyasync::TaskPromise<R>;
+    };
+
+
+    template<class R, class T, class... Args>
+    struct coroutine_traits<tinyasync::Task<R>, T, Args...> {
+
+        using promise_type = typename tinyasync::coroutine_traits_get_allocator_for_task<R, std::remove_reference_t<T>>::promise_type;
+    };
+
 }
 
 #endif
