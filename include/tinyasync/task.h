@@ -485,6 +485,10 @@ namespace tinyasync {
             return *this;
         }
 
+        void swap(Task &r) {
+            std::swap(this->m_h, r.m_h);
+        }
+
         ~Task()
         {
             if (m_h) {
@@ -694,5 +698,13 @@ namespace tinyasync {
     }
 
 } // tinyasync
+
+namespace std {
+
+    template<class R>
+    void swap(tinyasync::Task<R> &l, tinyasync::Task<R> &r) {
+        l.swap(r);
+    }
+}
 
 #endif

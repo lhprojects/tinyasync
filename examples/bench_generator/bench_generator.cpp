@@ -9,14 +9,14 @@
 #include <chrono>
 using namespace tinyasync;
 
-Task<uint64_t> task(uint64_t n)
+TINYASYNC_NOINL Task<uint64_t> task(uint64_t n)
 {
 	for (uint64_t i = 0; i < n; ++i) {
 		co_yield i;
 	}
 }
 
-Generator<uint64_t> generator(uint64_t n)
+TINYASYNC_NOINL Generator<uint64_t> generator(uint64_t n)
 {
 	for (uint64_t i = 0; i < n; ++i) {
 		co_yield i;
@@ -33,6 +33,7 @@ struct Iter
 
 		v = 0;
 	}
+
 	void next()
 	{
 		v += 1;
@@ -95,7 +96,7 @@ int main(int argc, char *[])
 {
 
 	uint64_t nCreate = 1000000;
-    uint64_t N = 1000;
+    uint64_t N = 10;
 	N += argc;
 	uint64_t d = nCreate;
 
