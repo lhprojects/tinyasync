@@ -544,55 +544,110 @@ namespace tinyasync
         }
     };
 
+    struct StackfulPool
+    {
+        char *m_base;
+        char *m_guard;       
 
-    template<std::size_t Nbytes>
-    struct StackfulPool : std::pmr::memory_resource {
-        char m_buffer[Nbytes];
-        std::size_t m_size = 0;
+        template<class T>
+        struct StackfulAllocator
+        {
+            using value_type = T;
 
-        virtual void* do_allocate(size_t bytes, size_t alignment) {
-            
-            auto old_size = m_size;
-            void *p = m_buffer + old_size;
-            auto esize = Nbytes - old_size;
-
-            if(alignment <= alignof(std::size_t)) {
-                alignment = alignof(std::size_t);
-
-                auto old_p = p;
-                p = (void*)(((uintptr_t)p - 1 + alignment) & -alignment);
-                auto new_size =  old_size + ((uintptr_t)p - (uintptr_t)old_p) + sizeof(std::size_t) + bytes;
-
-                if(new_size <= Nbytes) {
-                    *(std::size_t*)p = old_size;
-                    m_size = new_size;
-                    return (std::size_t*)p + 1;
-                }
-            } else {
-                auto old_p = p;
-                p = (void*)(((uintptr_t)p - 1 + alignment) & -alignment);
-                auto gap = ((uintptr_t)p - (uintptr_t)old_p);
-                auto new_size =  old_size + gap  + bytes;
-
-                if(gap >= sizeof(std::size_t)) {
-                    *((std::size_t*)p-1) = old_size;
-                    m_size = new_size;
-                    return p;
-                } else if(new_size + alignment <= Nbytes) {
-                    p = (char*)p + alignment;
-                    *((std::size_t*)p-1) = old_size;
-                    m_size = new_size + alignment;
-                    return p;
-                }
+            template<class U>
+            StackfulAllocator(StackfulAllocator<U> r) {
+                m_pool = r.m_pool;
             }
-            return nullptr;
+
+            StackfulAllocator() {
+                m_pool = nullptr;
+            }
+
+            StackfulPool *m_pool;
+
+            void *allocate(std::size_t sz) {
+                return m_pool->allocate(sz * sizeof(T), alignof(T));
+            }
+            void deallocate(void *p, std::size_t sz) {
+                m_pool->deallocate(p, sz * sizeof(T), alignof(T));
+            }
+        };
+
+        auto get_allocator_for_task() {
+            StackfulAllocator<std::byte> alloc;
+            alloc.m_pool = this;
+            return alloc;
         }
-        virtual void do_deallocate(void* p, size_t bytes, size_t alignment) {
-            auto *psize = (std::size_t*)p-1;
-            m_size = *psize;
+
+        StackfulPool(std::size_t sz) {
+            sz = up_round(sz, alignof(std::max_align_t));
+            m_guard = (char*)::malloc(sz);
+            m_base = m_guard + sz;
         }
-        virtual bool do_is_equal(memory_resource const &r) const noexcept {
-            return this == &r;
+
+        ~StackfulPool() {
+            ::free(m_guard);
+        }
+
+        [[noreturn]]
+        static void throw_exception()
+        {
+            throw std::bad_alloc();
+        }
+
+        static std::size_t up_round(std::size_t sz, std::size_t align) {
+            return (sz + align - 1) & ~(align-1);
+        }
+
+        void* allocate(size_t bytes, size_t alignment = alignof(std::max_align_t))
+        {
+
+            if(alignment > alignof(std::max_align_t)) {
+                auto base = m_base;
+                base -= bytes;
+                base = (char*)(std::uintptr_t(base) & ~(alignment-1));
+                
+                if(base < m_guard) {                
+                    throw_exception();
+                }
+
+                auto bytes1 = up_round(bytes, sizeof(std::size_t));
+                auto bytes2 = up_round(bytes, alignment);
+                if(bytes1 == bytes2) {
+                    auto size = m_base - base;
+                    if(size < sizeof(std::size_t)) {
+                        base -= alignment;
+                    }
+                }
+                auto pbase = (char**)((char*)base + bytes1);
+                *pbase = m_base;
+
+                m_base = base;
+                return base;
+
+            } else {
+                bytes = (bytes + alignof(std::max_align_t) - 1) & ~(alignof(std::max_align_t)-1);
+                auto base = m_base;
+                base -= bytes;
+                
+                if(base < m_guard) {                
+                    throw_exception();
+                }
+
+                m_base = base;
+                return base;
+            }
+
+        }
+
+        void deallocate(void* p, size_t bytes, size_t alignment = alignof(std::max_align_t))
+        {
+            if(alignment > alignof(std::max_align_t)) {
+                auto bytes1 = up_round(bytes, sizeof(std::size_t));
+                m_base = *(char**)((char*)p + bytes1);
+            } else {
+                m_base = (char*)p + bytes;
+            }
         }
     };
 

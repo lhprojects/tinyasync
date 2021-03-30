@@ -9,7 +9,10 @@
 #include <chrono>
 using namespace tinyasync;
 
-TINYASYNC_NOINL Task<uint64_t> task(uint64_t n)
+StackfulPool sb(1000);
+
+
+TINYASYNC_NOINL Task<uint64_t> task(StackfulPool &, uint64_t n)
 {
 	for (uint64_t i = 0; i < n; ++i) {
 		co_yield i;
@@ -91,23 +94,23 @@ TINYASYNC_NOINL uint64_t foo3(uint64_t N) {
 	return total;
 }
 
+TINYASYNC_NOINL void use_pointer(void *) {
+}
+
 __attribute__((aligned(4096)))
 int main(int argc, char *[])
 {
-
+	
 	uint64_t nCreate = 1000000;
     uint64_t N = 10;
 	N += argc;
 	uint64_t d = nCreate;
 
-	StackfulPool<1000> sb;
-	tinyasync::set_default_resource(&sb);
-
 
     timeit([&]() {  
 		uint64_t total = 0;
 		for(uint64_t r = 0; r < nCreate; ++r) {
-			Task<uint64_t> gen = task(N);
+			Task<uint64_t> gen = task(sb, N);
 			for (; gen.resume(); ) {
 				auto x = gen.result();
 				UPDATE_TOTAL();

@@ -11,6 +11,7 @@ namespace std {
     using std::experimental::suspend_never;
     using std::experimental::coroutine_handle;
     using std::experimental::noop_coroutine;
+    using std::experimental::coroutine_traits;
     namespace pmr {
         using std::experimental::pmr::memory_resource;
         using std::experimental::pmr::get_default_resource;
@@ -126,7 +127,6 @@ namespace tinyasync {
     inline std::pmr::memory_resource *set_default_resource(std::pmr::memory_resource *ptr) {
         return g_default_resource.exchange(ptr);
     }
-
 
     std::string vformat(char const* fmt, va_list args)
     {
@@ -312,7 +312,7 @@ namespace tinyasync {
     NativeHandle const NULL_HANDLE = 0;
     NativeSocket const NULL_SOCKET = NativeSocket(0);
 
-    template<class Result>
+    template<class Result, class Alloc>
     class TaskPromise;
 
     template<class Result>
