@@ -544,6 +544,11 @@ namespace tinyasync
         }
     };
 
+    struct StackfulPoolArg {
+        char *m_base;
+        char *m_guard;       
+    };
+    
     struct StackfulPool
     {
         char *m_base;
@@ -578,11 +583,23 @@ namespace tinyasync
             alloc.m_pool = this;
             return alloc;
         }
-
+        
         StackfulPool(std::size_t sz) {
             sz = up_round(sz, alignof(std::max_align_t));
             m_guard = (char*)::malloc(sz);
             m_base = m_guard + sz;
+        }
+
+        StackfulPoolArg as_arg() {
+            StackfulPoolArg arg;
+            arg.m_base = this->m_base;
+            arg.m_guard = this->m_guard;
+            return arg;            
+        }
+
+        StackfulPool(StackfulPoolArg arg) {
+            m_base = arg.m_base;
+            m_guard = arg.m_guard;
         }
 
         ~StackfulPool() {

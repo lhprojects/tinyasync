@@ -245,6 +245,7 @@ namespace tinyasync {
 
 #if defined(__GNUC__) || defined(__clang__) // gcc or clang
 
+#define TINYASYNC_UNREACHABLE() __builtin_unreachable()
 #define TINYASYNC_NOINL __attribute__((noinline))
 #define TINYASYNC_VCINL inline
 #define TINYASYNC_FUNCNAME __PRETTY_FUNCTION__
@@ -259,6 +260,7 @@ namespace tinyasync {
 
 #else // oh... try to pass compile
 
+#define TINYASYNC_UNREACHABLE()  
 #define TINYASYNC_LIKELY
 #define TINYASYNC_UNLIKELY
 

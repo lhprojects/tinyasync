@@ -341,7 +341,7 @@ namespace tinyasync {
     {
     public:
         using promise_type = TaskPromiseWithResult<Result>;
-        using coroutine_handle_type =  std::coroutine_handle<promise_type >;
+        using coroutine_handle_type =  std::coroutine_handle<promise_type>;
         using result_type = Result;
     private:
         coroutine_handle_type m_h;
@@ -388,6 +388,9 @@ namespace tinyasync {
             std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> awaiting_coro)
             {
                 auto sub_coroutine = m_sub_coroutine;
+                if(!sub_coroutine) {
+                    TINYASYNC_UNREACHABLE();
+                }
                 sub_coroutine.promise().m_continuation = awaiting_coro;
                 return sub_coroutine;
             }
@@ -539,27 +542,6 @@ namespace tinyasync {
     // resume a non dangling coroutine
 #define TINYASYNC_RESUME(coroutine)  resume_coroutine_callback(coroutine)
 
-
-    struct SpawnTask {
-
-        struct promise_type : TaskPromiseBase {
-            std::suspend_always initial_suspend() { return {}; }
-            std::suspend_never  final_suspend() noexcept { return {}; }
-
-            void unhandled_exception() {
-                TINYASYNC_RETHROW();
-            }
-            SpawnTask get_return_object() {
-                return {std::coroutine_handle<promise_type>::from_promise(*this)};
-            }
-            void return_void() { }
-        };
-
-        SpawnTask(std::coroutine_handle<promise_type> h) : m_handle(h) {   
-        }
-        std::coroutine_handle<promise_type> m_handle;
-    };
-
     [[noreturn]]
     void destroy_and_throw(std::coroutine_handle<TaskPromiseBase> task) {
         auto &exception = task.promise().m_unhandled_exception.exception();
@@ -568,35 +550,6 @@ namespace tinyasync {
         task.destroy();
         std::rethrow_exception(e);
     }
-
-    // body of spawn_task will not suspend
-    SpawnTask spawn_task(std::coroutine_handle<TaskPromiseBase> task)
-    {
-        auto &exception = task.promise().m_unhandled_exception.exception();
-        if(!exception) TINYASYNC_LIKELY {
-            task.destroy();
-        } else {
-            destroy_and_throw(task);
-        }
-        co_return;
-    }
-
-    // you can't get result of task here
-    // so use Task<void>
-    TINYASYNC_NOINL inline void co_spawn(Task<void> task)
-    {
-        TINYASYNC_GUARD("co_spawn(): ");
-
-        auto coroutine = task.coroutine_handle_base();
-        task.release();
-
-        auto spawn_task_ = spawn_task(coroutine);
-        auto spawn_coro = spawn_task_.m_handle;
-
-        coroutine.promise().m_continuation = std::coroutine_handle<TaskPromiseBase>::from_promise(spawn_coro.promise());
-        resume_coroutine_task(coroutine);
-    }
-
 
     // return true is coroutine is not done, otherwise return false
     // if the the coroutine has unhandled exception, destroy the couroutine and rethrow the exception
@@ -643,6 +596,30 @@ namespace tinyasync {
         }
     }
 
+    struct SpawnTask
+    {
+        SpawnTask(std::coroutine_handle<TaskPromiseBase> h) : m_handle(h) {   
+        }
+        std::coroutine_handle<TaskPromiseBase> m_handle;
+    };
+
+    template<class Alloc >
+    struct SpawnTaskPromise : TaskPromiseBase, TaskPromiseWithAllocator<Alloc>
+    {
+
+        std::suspend_never initial_suspend() { return {}; }
+        std::suspend_never final_suspend() noexcept { return {}; }
+
+        void unhandled_exception() {
+            TINYASYNC_RETHROW();
+        }
+
+        SpawnTask get_return_object() {
+            return {std::coroutine_handle<TaskPromiseBase>::from_promise(*this)};
+        }
+        void return_void() { }
+    };
+    
     class TINYASYNC_NODISCARD YieldAwaiter {
     public:
         bool await_ready() noexcept { return false; }
@@ -677,13 +654,20 @@ namespace tinyasync {
 
     template<class T>
     decltype(std::declval<T>().get_allocator_for_task())
-    get_allocator_type(T *p);
+    get_allocator_type(int *p);
 
 
-    template<class R, class T>
-    struct coroutine_traits_get_allocator_for_task {
+    template<class... Args>
+    struct get_allocator_for_task;
 
-        using promise_type = tinyasync::TaskPromise<R, decltype(get_allocator_type<T>((T*)nullptr))>;
+    template<class T, class... Args>
+    struct get_allocator_for_task<T, Args...> {
+        using allocator_type = decltype(get_allocator_type<T>((int*)nullptr));
+    };
+
+    template<>
+    struct get_allocator_for_task<> {
+        using allocator_type = std::allocator<std::byte>;
     };
 
 } // tinyasync
@@ -696,18 +680,43 @@ namespace std {
     }
 
     template<class R, class... Args>
-    struct coroutine_traits<tinyasync::Task<R>, Args...> {
-
-        using promise_type = tinyasync::TaskPromise<R>;
+    struct coroutine_traits<tinyasync::Task<R>, Args...>
+    {
+        using allocator_type = typename tinyasync::get_allocator_for_task<Args...>::allocator_type;
+        using promise_type = tinyasync::TaskPromise<R, allocator_type>;
     };
 
-
-    template<class R, class T, class... Args>
-    struct coroutine_traits<tinyasync::Task<R>, T, Args...> {
-
-        using promise_type = typename tinyasync::coroutine_traits_get_allocator_for_task<R, std::remove_reference_t<T>>::promise_type;
+    template<class... Args>
+    struct coroutine_traits<tinyasync::SpawnTask, Args...>
+    {
+        using allocator_type = typename tinyasync::get_allocator_for_task<Args...>::allocator_type;
+        using promise_type = tinyasync::SpawnTaskPromise<allocator_type>;
     };
+}
 
+
+namespace tinyasync {
+
+    // you can't get result of task here
+    // so use Task<void>
+    inline SpawnTask co_spawn(Task<void> task)
+    {
+        co_await task;
+    }
+
+    template<class L, class... Args>
+    SpawnTask co_spawn_ramp(L &&ramp, Args &&... args)
+    {
+        auto task = std::forward<L>(ramp)(std::forward<Args>(args)...);
+        co_await task;
+    }
+
+    template<class Pool, class L, class... Args>
+    SpawnTask co_spawn_ramp_with_pool(Pool &get_alloc, L &&ramp, Args &&... args)
+    {
+        auto task = std::forward<L>(ramp)(std::forward<Args>(args)...);
+        co_await task;
+    }
 }
 
 #endif
