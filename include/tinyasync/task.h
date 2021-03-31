@@ -565,14 +565,14 @@ namespace tinyasync {
         auto sub_coroutine = m_sub_coroutine;
         TINYASYNC_ASSERT(sub_coroutine.done());
 
-        if(!sub_coroutine) {
-            TINYASYNC_UNREACHABLE();
-        }
-
         auto &promise = sub_coroutine.promise();
         
         if(promise.m_unhandled_exception.exception()) {
             reset_and_throw_exception(promise.m_unhandled_exception.exception());
+        }
+
+        if(!m_sub_coroutine) {
+            TINYASYNC_UNREACHABLE();
         }
 
         if constexpr (!std::is_same_v<void, Result>) {
@@ -585,10 +585,6 @@ namespace tinyasync {
     {
         auto sub_coroutine = m_sub_coroutine;
         TINYASYNC_ASSERT(sub_coroutine.done());
-        
-        if(!sub_coroutine) {
-            TINYASYNC_UNREACHABLE();
-        }
 
         auto &promise = sub_coroutine.promise();
 
@@ -596,6 +592,10 @@ namespace tinyasync {
             reset_and_throw_exception(promise.m_unhandled_exception.exception());
         }
          
+        if(!m_sub_coroutine) {
+            TINYASYNC_UNREACHABLE();
+        }
+        
         if constexpr (!std::is_same_v<void, Result>) {
             return std::move(sub_coroutine.promise().m_result);
         }
