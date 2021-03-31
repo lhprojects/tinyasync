@@ -388,9 +388,6 @@ namespace tinyasync {
             std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> awaiting_coro)
             {
                 auto sub_coroutine = m_sub_coroutine;
-                if(!sub_coroutine) {
-                    TINYASYNC_UNREACHABLE();
-                }
                 sub_coroutine.promise().m_continuation = awaiting_coro;
                 return sub_coroutine;
             }
@@ -566,8 +563,12 @@ namespace tinyasync {
     Result Task<Result>::Awaiter::await_resume()
     {
         auto sub_coroutine = m_sub_coroutine;
-        TINYASYNC_GUARD("Task(`%s`).Awaiter.await_resume(): ", c_name(sub_coroutine));
         TINYASYNC_ASSERT(sub_coroutine.done());
+
+        if(!sub_coroutine) {
+            TINYASYNC_UNREACHABLE();
+        }
+
         auto &promise = sub_coroutine.promise();
         
         if(promise.m_unhandled_exception.exception()) {
@@ -583,8 +584,12 @@ namespace tinyasync {
     Result Task<Result>::JoinAwaiter::await_resume()
     {
         auto sub_coroutine = m_sub_coroutine;
-        TINYASYNC_GUARD("Task(`%s`).JoinAwaiter.await_resume(): ", c_name(sub_coroutine));
         TINYASYNC_ASSERT(sub_coroutine.done());
+        
+        if(!sub_coroutine) {
+            TINYASYNC_UNREACHABLE();
+        }
+
         auto &promise = sub_coroutine.promise();
 
         if(promise.m_unhandled_exception.exception()) {
