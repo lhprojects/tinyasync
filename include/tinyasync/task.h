@@ -702,11 +702,11 @@ namespace std {
 
 namespace tinyasync {
 
-    // you can't get result of task here
-    // so use Task<void>
-    inline SpawnTask co_spawn(Task<void> task)
+    template<class Result>
+    inline SpawnTask co_spawn(Task<Result> task)
     {
         co_await task;
+        // help simpilfy the destructor of task
         if(!task.coroutine_handle()) {
             TINYASYNC_UNREACHABLE();
         }
