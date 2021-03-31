@@ -595,7 +595,7 @@ namespace tinyasync {
         if(!m_sub_coroutine) {
             TINYASYNC_UNREACHABLE();
         }
-        
+
         if constexpr (!std::is_same_v<void, Result>) {
             return std::move(sub_coroutine.promise().m_result);
         }
@@ -707,6 +707,9 @@ namespace tinyasync {
     inline SpawnTask co_spawn(Task<void> task)
     {
         co_await task;
+        if(!task.coroutine_handle()) {
+            TINYASYNC_UNREACHABLE();
+        }
     }
 
     template<class L, class... Args>
@@ -714,6 +717,9 @@ namespace tinyasync {
     {
         auto task = std::forward<L>(ramp)(std::forward<Args>(args)...);
         co_await task;
+        if(!task.coroutine_handle()) {
+            TINYASYNC_UNREACHABLE();           
+        }
     }
 
     template<class Pool, class L, class... Args>
@@ -721,6 +727,9 @@ namespace tinyasync {
     {
         auto task = std::forward<L>(ramp)(std::forward<Args>(args)...);
         co_await task;
+        if(!task.coroutine_handle()) {
+            TINYASYNC_UNREACHABLE();                       
+        }
     }
 }
 
