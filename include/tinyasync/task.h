@@ -147,7 +147,8 @@ namespace tinyasync {
         alignas(std::exception_ptr) char m_exception[sizeof(std::exception_ptr)];
     };
 
-    struct TaskPromiseBase {
+    struct TaskPromiseBase
+    {
     public:
         // resumer to destruct exception
         ExceptionPtrWrapper m_unhandled_exception;
@@ -169,20 +170,12 @@ namespace tinyasync {
 
         struct FinalAwaiter : std::suspend_always
         {
-            bool await_ready() noexcept { return false; }
-
             template<class Promise>
             std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> h) const noexcept
             {
                 auto &promise = h.promise();
                 auto continuum = promise.m_continuation;
                 return continuum;
-
-            }
-
-            void await_resume() const noexcept
-            {
-                assert(false);
             }
         };
 
@@ -601,15 +594,16 @@ namespace tinyasync {
         }
     }
 
+
     struct SpawnTask
     {
-        SpawnTask(std::coroutine_handle<TaskPromiseBase> h) : m_handle(h) {   
+        SpawnTask(std::coroutine_handle<> h) : m_handle(h) {   
         }
-        std::coroutine_handle<TaskPromiseBase> m_handle;
+        std::coroutine_handle<> m_handle;
     };
 
     template<class Alloc >
-    struct SpawnTaskPromise : TaskPromiseBase, TaskPromiseWithAllocator<Alloc>
+    struct SpawnTaskPromise : TaskPromiseWithAllocator<Alloc>
     {
 
         std::suspend_never initial_suspend() { return {}; }
@@ -620,7 +614,7 @@ namespace tinyasync {
         }
 
         SpawnTask get_return_object() {
-            return {std::coroutine_handle<TaskPromiseBase>::from_promise(*this)};
+            return {std::coroutine_handle<SpawnTaskPromise>::from_promise(*this)};
         }
         void return_void() { }
     };

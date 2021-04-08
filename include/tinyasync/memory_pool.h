@@ -663,6 +663,7 @@ namespace tinyasync
                 auto bytes1 = up_round(bytes, sizeof(std::size_t));
                 m_base = *(char**)((char*)p + bytes1);
             } else {
+                bytes = (bytes + alignof(std::max_align_t) - 1) & ~(alignof(std::max_align_t)-1);
                 m_base = (char*)p + bytes;
             }
         }
