@@ -128,7 +128,7 @@ namespace tinyasync {
         return g_default_resource.exchange(ptr);
     }
 
-    std::string vformat(char const* fmt, va_list args)
+    inline std::string vformat(char const* fmt, va_list args)
     {
         va_list args2;
         va_copy(args2, args);
@@ -139,7 +139,7 @@ namespace tinyasync {
         return ret;
     }
 
-    std::string format(char const* fmt, ...)
+    inline std::string format(char const* fmt, ...)
     {
         va_list args;
         va_start(args, fmt);
@@ -165,7 +165,7 @@ namespace tinyasync {
     }
 
 
-    void sync_sleep(std::chrono::nanoseconds nanoseconds)
+    inline void sync_sleep(std::chrono::nanoseconds nanoseconds)
     {
         uint64_t miliseconds_ = (nanoseconds.count() / (1000*1000));
         assert((DWORD)(miliseconds_) == miliseconds_);
