@@ -931,7 +931,7 @@ namespace tinyasync {
 
     using DefaultSpinLock = SysSpinLock;
 
-    [[noreturn]] void terminate_with_unhandled_exception() noexcept
+    [[noreturn]] inline void terminate_with_unhandled_exception() noexcept
     {
         fprintf(stderr, "exception: %s", to_string(std::current_exception()).c_str());
         std::terminate();
