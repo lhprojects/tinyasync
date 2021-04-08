@@ -178,17 +178,17 @@ namespace tinyasync {
     using NativeHandle = int;
     using NativeSocket = int;
 
-    int close_socket(NativeSocket h)
+    inline int close_socket(NativeSocket h)
     {
         return ::close(h);
     }
 
-    int close_handle(NativeHandle h)
+    inline int close_handle(NativeHandle h)
     {
         return ::close(h);
     }
 
-    timespec to_timespec(std::chrono::nanoseconds nanoseconds)
+    inline timespec to_timespec(std::chrono::nanoseconds nanoseconds)
     {
 
         timespec time;
@@ -201,13 +201,13 @@ namespace tinyasync {
         return time;
     }
 
-    void sync_sleep(std::chrono::nanoseconds nanoseconds)
+    inline void sync_sleep(std::chrono::nanoseconds nanoseconds)
     {
         auto timespec = to_timespec(nanoseconds);
         ::nanosleep(&timespec, NULL);
     }
 
-    std::string abi_name_demangle(const char* abi_name)
+    inline std::string abi_name_demangle(const char* abi_name)
     {
         // https://gcc.gnu.org/onlinedocs/libstdc++/libstdc++-html-USERS-4.3/a01696.html
         // https://stackoverflow.com/questions/4939636/function-to-mangle-demangle-functions
@@ -411,7 +411,7 @@ namespace tinyasync {
         return handle_c_str((NativeHandle)handle);
     }
 
-    void to_string_to(std::exception_ptr const& e, std::string& string_builder)
+    inline void to_string_to(std::exception_ptr const& e, std::string& string_builder)
     {
         if (!e) {
             string_builder += "<empty exception>\n";
@@ -483,7 +483,7 @@ namespace tinyasync {
         return { };
     };
 
-    std::string to_string(std::exception_ptr const& e)
+    inline std::string to_string(std::exception_ptr const& e)
     {
         std::string sb = "top exception: ";
         to_string_to(e, sb);
@@ -664,7 +664,7 @@ namespace tinyasync {
         return true;
     }
 
-    bool set_name_r(std::coroutine_handle<> const& h)
+    inline bool set_name_r(std::coroutine_handle<> const& h)
     {
         return false;
     }
@@ -676,7 +676,7 @@ namespace tinyasync {
     }
 
 
-    void throw_error(std::string const& what, int ec)
+    inline void throw_error(std::string const& what, int ec)
     {
         throw std::system_error(ec, std::system_category(), what);
     }
