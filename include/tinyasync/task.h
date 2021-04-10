@@ -523,7 +523,7 @@ namespace tinyasync {
         }
     }
 
-    void resume_coroutine_callback(std::coroutine_handle<TaskPromiseBase> coroutine)
+    inline void resume_coroutine_callback(std::coroutine_handle<TaskPromiseBase> coroutine)
     {
         coroutine.resume();
         // the last coroutine is not always the same as the resume coroutine
@@ -533,7 +533,7 @@ namespace tinyasync {
 #define TINYASYNC_RESUME(coroutine)  resume_coroutine_callback(coroutine)
 
     [[noreturn]]
-    void destroy_and_throw(std::coroutine_handle<TaskPromiseBase> task) {
+    inline void destroy_and_throw(std::coroutine_handle<TaskPromiseBase> task) {
         auto &exception = task.promise().m_unhandled_exception.exception();
         auto e = exception;
         exception = nullptr;
@@ -626,7 +626,7 @@ namespace tinyasync {
         void await_resume() noexcept { }
     };
 
-    YieldAwaiter yield() {
+    inline YieldAwaiter yield() {
         return { };
     }
 
@@ -643,7 +643,7 @@ namespace tinyasync {
         void await_resume() noexcept { }
     };
 
-    YieldAwaiterC yield(std::coroutine_handle<> h) {
+    inline YieldAwaiterC yield(std::coroutine_handle<> h) {
         return { h };
     }
 

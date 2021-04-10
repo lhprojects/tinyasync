@@ -341,25 +341,15 @@ namespace tinyasync {
     template<class T>
     class Task;
 
-    inline std::map<std::coroutine_handle<>, std::string> name_map;
-    inline void set_name(std::coroutine_handle<> h, std::string name)
-    {
-        auto& name_ = name_map[h];
-        name_ = std::move(name);
-    }
-
-    inline char const* c_name(std::coroutine_handle<> h)
+    inline std::string coro_name(std::coroutine_handle<> h)
     {
         if (h == nullptr)
             return "null";
         else if (h == std::noop_coroutine())
             return "noop";
 
-        auto& name = name_map[h];
-        if (name.empty()) {
-            name = format("%p", h.address());
-        }
-        return name.c_str();
+        auto name = format("%p", h.address());
+        return name;
     }
 
     using TypeInfoRef = std::reference_wrapper<const std::type_info>;
@@ -655,26 +645,6 @@ namespace tinyasync {
 
         std::string m_name;
     };
-
-    inline bool set_name_r(std::coroutine_handle<> const& h, Name const& name)
-    {
-        TINYASYNC_GUARD("set_name_r(): ");
-        TINYASYNC_LOG("set name `%s` for %p", name.m_name.c_str(), h.address());
-        ::tinyasync::set_name(h, name.m_name);
-        return true;
-    }
-
-    inline bool set_name_r(std::coroutine_handle<> const& h)
-    {
-        return false;
-    }
-
-    template <class F, class... T>
-    inline bool set_name_r(std::coroutine_handle<> const& h, F const& f, T const &...args)
-    {
-        return set_name_r(h, args...);
-    }
-
 
     inline void throw_error(std::string const& what, int ec)
     {
