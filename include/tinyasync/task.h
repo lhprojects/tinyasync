@@ -2,9 +2,34 @@
 #define TINYASYNC_TASK_H
 
 #include <exception>
+//#define TINYASYNC_TASK_OPO_COAWAIT
 
 namespace tinyasync {
 
+    struct DscExpPtr {
+
+        std::exception_ptr *m_e;
+        ~DscExpPtr() {
+            *m_e = nullptr;
+        }
+    };
+
+    [[noreturn]]
+    inline void reset_and_throw_exception(std::exception_ptr &e) {
+        DscExpPtr dep;
+        dep.m_e = &e;
+        std::rethrow_exception(e);
+    }
+
+    template<class Coro>
+    [[noreturn]]
+    inline void reset_and_throw_coro(Coro &coro) {
+        DscExpPtr dep;
+        auto &promise = coro.promise();
+        dep.m_e = &promise.m_unhandled_exception.exception();
+        std::rethrow_exception(promise.m_unhandled_exception.exception());
+    }
+    
     struct ResumeResult;
     
     template<class Result>
@@ -364,14 +389,14 @@ namespace tinyasync {
             return promise.m_result;
         }
 
+#ifdef TINYASYNC_TASK_OPO_COAWAIT
         struct TINYASYNC_NODISCARD Awaiter
         {
-            std::coroutine_handle<promise_type> m_sub_coroutine;
-
-            Awaiter(std::coroutine_handle<promise_type> h) : m_sub_coroutine(h)
+            std::coroutine_handle<promise_type> m_h;
+            Awaiter(std::coroutine_handle<promise_type> h) : m_h(h)
             {
             }
-
+#endif
             bool await_ready() noexcept
             {
                 return false;
@@ -380,17 +405,41 @@ namespace tinyasync {
             template<class Promise>
             std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> awaiting_coro)
             {
-                auto sub_coroutine = m_sub_coroutine;
+                auto sub_coroutine = m_h;
                 sub_coroutine.promise().m_continuation = awaiting_coro;
                 return sub_coroutine;
             }
 
-            Result await_resume();
+            Result await_resume() {
+                auto sub_coroutine = m_h;
+                TINYASYNC_ASSERT(sub_coroutine.done());
 
+                auto &promise = sub_coroutine.promise();
+                
+                if(promise.m_unhandled_exception.exception()) {
+                    reset_and_throw_coro(sub_coroutine);
+                    //reset_and_throw_exception(promise.m_unhandled_exception.exception());
+                }
+
+                if(!sub_coroutine) {
+                    TINYASYNC_UNREACHABLE();
+                }
+
+                if constexpr (!std::is_same_v<void, Result>) {
+                    return std::move(sub_coroutine.promise().m_result);
+                }
+
+            }
+
+#ifdef TINYASYNC_TASK_OPO_COAWAIT
         };
-
-        struct TINYASYNC_NODISCARD JoinAwaiter
+        Awaiter operator co_await()
         {
+            return { m_h };
+        }
+#endif
+        struct TINYASYNC_NODISCARD JoinAwaiter
+        {            
             std::coroutine_handle<promise_type> m_sub_coroutine;
 
             JoinAwaiter(std::coroutine_handle<promise_type> h) : m_sub_coroutine(h)
@@ -427,11 +476,6 @@ namespace tinyasync {
         // task.resume();
         // the coroutine will is destoryed
         bool resume();
-
-        Awaiter operator co_await()
-        {
-            return { m_h };
-        }
 
         JoinAwaiter join()
         {
@@ -499,21 +543,6 @@ namespace tinyasync {
         Task& operator=(Task const& r) = delete;
     };
 
-    struct DscExpPtr {
-
-        std::exception_ptr *m_e;
-        ~DscExpPtr() {
-            *m_e = nullptr;
-        }
-    };
-
-    [[noreturn]]
-    inline void reset_and_throw_exception(std::exception_ptr &e) {
-        DscExpPtr dep;
-        dep.m_e = &e;
-
-        std::rethrow_exception(e);
-    }
 
     inline void resume_coroutine_task(std::coroutine_handle<TaskPromiseBase> coroutine)
     {
@@ -550,27 +579,6 @@ namespace tinyasync {
     {
         resume_coroutine_task(this->coroutine_handle_base());
         return !coroutine_handle().done();
-    }
-
-    template<class Result>
-    Result Task<Result>::Awaiter::await_resume()
-    {
-        auto sub_coroutine = m_sub_coroutine;
-        TINYASYNC_ASSERT(sub_coroutine.done());
-
-        auto &promise = sub_coroutine.promise();
-        
-        if(promise.m_unhandled_exception.exception()) {
-            reset_and_throw_exception(promise.m_unhandled_exception.exception());
-        }
-
-        if(!m_sub_coroutine) {
-            TINYASYNC_UNREACHABLE();
-        }
-
-        if constexpr (!std::is_same_v<void, Result>) {
-            return std::move(sub_coroutine.promise().m_result);
-        }
     }
 
     template<class Result>
