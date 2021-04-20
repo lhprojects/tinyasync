@@ -9,7 +9,6 @@
 #include <chrono>
 using namespace tinyasync;
 
-
 Task<uint64_t> task(uint64_t n)
 {
 	if(n == 0) {
@@ -239,7 +238,7 @@ int main(int argc, char *[])
 		return total;
     }, nCreate, N, "func");
 
-
+	sqrt(1);
 
 	return 0;
 }

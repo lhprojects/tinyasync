@@ -122,7 +122,10 @@ public:
 
     Task<> listen()
     {
-        Acceptor acceptor(*m_ctx, Protocol::ip_v4(), Endpoint(Address::Any(), 8899));
+        Endpoint ep{Address::Any(), 8899};
+        printf("listenning to %s:%d\n", ep.address().to_string().c_str(), ep.port());
+        printf("connect server using: nc localhost %d\n", ep.port());
+        Acceptor acceptor(*m_ctx, Protocol::ip_v4(), ep);
         for (;;) {
             Connection conn = co_await acceptor.async_accept();
             co_spawn(on_join(std::move(conn)));

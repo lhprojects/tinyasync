@@ -1,7 +1,6 @@
 #ifndef TINYASYNC_TASK_H
 #define TINYASYNC_TASK_H
 
-#include <exception>
 //#define TINYASYNC_TASK_OPO_COAWAIT
 
 namespace tinyasync {
@@ -32,64 +31,104 @@ namespace tinyasync {
     
     struct ResumeResult;
     
+
+    template<class Alloc>
+    struct TaskPromiseWithAllocator {
+        
+        using allocator_type = typename std::allocator_traits<Alloc>::template rebind_alloc<std::max_align_t>;
+        using allocator_traits = typename std::allocator_traits<Alloc>::template rebind_traits<std::max_align_t>;
+
+        inline static void * do_alloc(std::size_t size, allocator_type &alloc)
+        {
+            // put allocator at the end of the frame       
+            auto constexpr allocator_size =  sizeof(allocator_type);
+            auto constexpr allocator_align =  alignof(allocator_type);
+            auto allocator_offset = (size  + allocator_align - 1u) & ~(allocator_align - 1u);
+
+            auto allocate_size = allocator_offset + allocator_size;
+            auto num = (allocate_size + sizeof(std::max_align_t) - 1)/sizeof(std::max_align_t);
+
+            auto ptr = alloc.allocate(num);
+            new((char*)ptr + allocator_offset) allocator_type(std::move(alloc));
+            return ptr;
+        }
+
+        template<class T, class... Args>
+        static auto 
+        alloc_0(std::size_t size, T &&get_alloc, Args &&...) ->
+        std::enable_if_t<
+            std::is_same_v<std::remove_reference_t<decltype(get_alloc.get_allocator_for_task())>, Alloc>,
+        void*>
+        {
+            allocator_type alloc = get_alloc.get_allocator_for_task();
+            auto ptr = do_alloc(size, alloc);
+            return ptr;
+        }
+
+        template<class... Args>
+        static auto alloc_0(std::size_t size, Args &&...)
+        {
+            auto alloc = allocator_type();
+            auto ptr = do_alloc(size, alloc);
+            return ptr;
+        }
+
+        template<class... Args>
+        static void* operator new(std::size_t size, Args &&... args)
+        {
+            //auto ptr = alloc_0(size, std::forward<Args>(args)...);
+            auto ptr = alloc_0(size, args...);
+            return ptr;
+        }
+
+        static void operator delete(void* ptr, std::size_t size)
+        {
+            auto constexpr allocator_size =  sizeof(allocator_type);
+            auto constexpr allocator_align =  alignof(allocator_type);
+            auto allocator_offset = (size  + allocator_align - 1u) & ~(allocator_align - 1u);
+
+            auto allocate_size = allocator_offset + allocator_size;
+            auto num = (allocate_size + sizeof(std::max_align_t) - 1)/sizeof(std::max_align_t);
+
+            using value_type = typename allocator_traits::value_type;
+            allocator_type alloc = std::move(*(allocator_type*)((char*)ptr + allocator_offset));
+            alloc.deallocate(static_cast<value_type*>(ptr), num);
+        }
+    };
+
+    template<class Result>
+    class Generator;
+
+    template<class Result>
+    struct GeneratorPromiseWithResult
+    {
+        Generator<Result> get_return_object();
+        template<class V>
+        std::suspend_always yield_value(V &&v) {
+            m_result = std::forward<V>(v);
+            return { };
+        }
+
+        void return_void() {                
+        }
+
+        Result m_result;
+    };
+
+    template<class Result, class Alloc>
+    struct GeneratorPromise : GeneratorPromiseWithResult<Result>, TaskPromiseWithAllocator<Alloc>
+    {
+        std::suspend_always initial_suspend() { return {}; }
+        std::suspend_always final_suspend() noexcept { return {}; }
+        void unhandled_exception() { throw; }
+    };
+    
     template<class Result>
     class Generator {
-
-        struct Promise
-        {
-
-            inline static void * do_alloc(std::size_t size, std::pmr::memory_resource *memory_resource)
-            {
-                // put allocator at the end of the frame
-                auto constexpr memory_resource_size =  sizeof(std::pmr::memory_resource*);
-                auto constexpr memory_resource_align =  alignof(std::pmr::memory_resource*);
-                auto memory_resource_offset = (size  + memory_resource_align - 1u) & ~(memory_resource_align - 1u);
-
-                auto ptr = memory_resource->allocate(memory_resource_offset + memory_resource_size);
-                new((char*)ptr + memory_resource_offset) decltype(memory_resource)(memory_resource);
-                return ptr;
-            }
-
-            static void* operator new(std::size_t size)
-            {
-                auto ptr = do_alloc(size, get_default_resource());
-                return ptr;
-            }
-
-            static void operator delete(void* ptr, std::size_t size)
-            {
-                auto constexpr memory_resource_size =  sizeof(std::pmr::memory_resource*);
-                auto constexpr memory_resource_align =  alignof(std::pmr::memory_resource*);
-                auto memory_resource_offset = (size  + memory_resource_align - 1u) & ~(memory_resource_align - 1u);
-
-                auto memory_resource = *(std::pmr::memory_resource**)((char*)ptr + memory_resource_offset);
-                memory_resource->deallocate(ptr, size);
-            }
-
-            std::suspend_always initial_suspend() { return{}; }
-            std::suspend_always final_suspend() noexcept { return{}; }
-            void unhandled_exception() { throw; }
-
-            Generator get_return_object() {
-                auto coro = std::coroutine_handle<Promise>::from_promise(*this);
-                return {coro};
-            }
-
-            template<class V>
-            std::suspend_always yield_value(V &&v) {
-                m_result = std::forward<V>(v);
-                return {};
-            }
-
-            void return_void() {                
-            }
-
-            Result m_result;
-        };
     public:        
-        using promise_type = Promise;
+        using promise_type = GeneratorPromiseWithResult<Result>;
 
-        Generator(std::coroutine_handle<Promise> coro) : m_coro(coro) {
+        Generator(std::coroutine_handle<promise_type> coro) : m_coro(coro) {
         }
         Generator(Generator &&r) : m_coro(r.m_coro){
             r.m_coro = nullptr;
@@ -98,14 +137,16 @@ namespace tinyasync {
         Generator &operator=(Generator &&r) = delete;
         Generator operator=(Generator const &) = delete;
         ~Generator() {
-            if(m_coro)
-                m_coro.destroy();            
+            auto coro = m_coro;
+            if(coro)
+                coro.destroy();            
         }
 
 
         bool next() {
-            m_coro.resume();
-            return !m_coro.done();
+            auto coro = m_coro;
+            coro.resume();
+            return !coro.done();
         }
 
         Result &get() {
@@ -117,8 +158,8 @@ namespace tinyasync {
         };
 
         struct Iterator {
-            std::coroutine_handle<Promise> m_coro;
-            Iterator(std::coroutine_handle<Promise> coro) : m_coro(coro) { }
+            std::coroutine_handle<promise_type> m_coro;
+            Iterator(std::coroutine_handle<promise_type> coro) : m_coro(coro) { }
 
             Result &operator*() {
                 auto &promise = m_coro.promise();
@@ -137,8 +178,9 @@ namespace tinyasync {
         };
 
         Iterator begin() {
-            m_coro.resume();
-            return m_coro;
+            auto coro = m_coro;
+            coro.resume();
+            return { coro };
         }
 
         IteratorEnd end() {
@@ -146,9 +188,16 @@ namespace tinyasync {
         }
 
     private:
-        std::coroutine_handle<Promise> m_coro;
-
+        std::coroutine_handle<promise_type> m_coro;
     };
+
+
+    template<class R>
+    Generator<R> GeneratorPromiseWithResult<R>::get_return_object() {
+        auto coro = std::coroutine_handle<GeneratorPromiseWithResult<R> >::from_promise(*this);
+        return {coro};
+    }
+
 
     template<class Result>
     class Task;
@@ -254,69 +303,6 @@ namespace tinyasync {
     {
     };
 
-    template<class Alloc>
-    struct TaskPromiseWithAllocator {
-        
-        using allocator_type = typename std::allocator_traits<Alloc>::template rebind_alloc<std::max_align_t>;
-        using allocator_traits = typename std::allocator_traits<Alloc>::template rebind_traits<std::max_align_t>;
-
-        inline static void * do_alloc(std::size_t size, allocator_type &alloc)
-        {
-            // put allocator at the end of the frame       
-            auto constexpr allocator_size =  sizeof(allocator_type);
-            auto constexpr allocator_align =  alignof(allocator_type);
-            auto allocator_offset = (size  + allocator_align - 1u) & ~(allocator_align - 1u);
-
-            auto allocate_size = allocator_offset + allocator_size;
-            auto num = (allocate_size + sizeof(std::max_align_t) - 1)/sizeof(std::max_align_t);
-
-            auto ptr = alloc.allocate(num);
-            new((char*)ptr + allocator_offset) allocator_type(std::move(alloc));
-            return ptr;
-        }
-
-        template<class T, class... Args>
-        static auto 
-        alloc_0(std::size_t size, T &&get_alloc, Args &&...) ->
-        std::enable_if_t<
-            std::is_same_v<std::remove_reference_t<decltype(get_alloc.get_allocator_for_task())>, Alloc>,
-        void*>
-        {
-            allocator_type alloc = get_alloc.get_allocator_for_task();
-            auto ptr = do_alloc(size, alloc);
-            return ptr;
-        }
-
-        template<class... Args>
-        static auto alloc_0(std::size_t size, Args &&...)
-        {
-            auto alloc = allocator_type();
-            auto ptr = do_alloc(size, alloc);
-            return ptr;
-        }
-
-        template<class... Args>
-        static void* operator new(std::size_t size, Args &&... args)
-        {
-            //auto ptr = alloc_0(size, std::forward<Args>(args)...);
-            auto ptr = alloc_0(size, args...);
-            return ptr;
-        }
-
-        static void operator delete(void* ptr, std::size_t size)
-        {
-            auto constexpr allocator_size =  sizeof(allocator_type);
-            auto constexpr allocator_align =  alignof(allocator_type);
-            auto allocator_offset = (size  + allocator_align - 1u) & ~(allocator_align - 1u);
-
-            auto allocate_size = allocator_offset + allocator_size;
-            auto num = (allocate_size + sizeof(std::max_align_t) - 1)/sizeof(std::max_align_t);
-
-            using value_type = typename allocator_traits::value_type;
-            allocator_type alloc = std::move(*(allocator_type*)((char*)ptr + allocator_offset));
-            alloc.deallocate(static_cast<value_type*>(ptr), num);
-        }
-    };
     
     template<class Result, class Alloc = std::allocator<std::byte> >
     struct TaskPromise : TaskPromiseWithResult<Result>, TaskPromiseWithAllocator<Alloc> {
@@ -489,7 +475,6 @@ namespace tinyasync {
 
         Task(coroutine_handle_type h) : m_h(h)
         {
-            TINYASYNC_LOG("Task(`%s`).Task(): ", c_name(m_h));
         }
 
         Task(Task&& r) noexcept : m_h(std::exchange(r.m_h, nullptr))
@@ -512,7 +497,6 @@ namespace tinyasync {
         {
             if (m_h) {
                 // unset_name();
-                TINYASYNC_GUARD("Task(`%s`).~Task(): ", c_name(m_h));
                 {
                     TINYASYNC_GUARD("coroutine_handle.destroy(): ");
                     TINYASYNC_LOG("");
@@ -699,8 +683,14 @@ namespace std {
         using allocator_type = typename tinyasync::get_allocator_for_task<Args...>::allocator_type;
         using promise_type = tinyasync::SpawnTaskPromise<allocator_type>;
     };
-}
 
+    template<class R, class... Args>
+    struct coroutine_traits<tinyasync::Generator<R>, Args...>
+    {
+        using allocator_type = typename tinyasync::get_allocator_for_task<Args...>::allocator_type;
+        using promise_type = tinyasync::GeneratorPromise<R, allocator_type>;
+    };
+}
 
 namespace tinyasync {
 

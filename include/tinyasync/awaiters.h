@@ -87,9 +87,15 @@ namespace tinyasync {
         {
         }
 
-        Address address() const {
+        Address address() const noexcept {
             return m_address;
         }
+
+        uint16_t port() const noexcept { 
+            return m_port;
+        }
+        
+    private:
         Address m_address;
         uint16_t m_port;
     };
@@ -177,21 +183,21 @@ namespace tinyasync {
 
 
         int binderr;
-        if(endpoint.m_address.m_address_type == AddressType::IpV4)
+        if(endpoint.address().m_address_type == AddressType::IpV4)
         {
             sockaddr_in serveraddr;
             memset(&serveraddr, 0, sizeof(serveraddr));
             serveraddr.sin_family = AF_INET;
-            serveraddr.sin_port = htons(endpoint.m_port);
-            serveraddr.sin_addr.s_addr = endpoint.m_address.m_addr4.s_addr;
+            serveraddr.sin_port = htons(endpoint.port());
+            serveraddr.sin_addr.s_addr = endpoint.address().m_addr4.s_addr;
             binderr = ::bind(socket, (sockaddr*)&serveraddr, sizeof(serveraddr));
 
-        } else if(endpoint.m_address.m_address_type == AddressType::IpV6) {
+        } else if(endpoint.address().m_address_type == AddressType::IpV6) {
             sockaddr_in6 serveraddr;
             memset(&serveraddr, 0, sizeof(serveraddr));
             serveraddr.sin6_family = AF_INET6;
-            serveraddr.sin6_port = htons(endpoint.m_port);
-            serveraddr.sin6_addr = endpoint.m_address.m_addr6;
+            serveraddr.sin6_port = htons(endpoint.port());
+            serveraddr.sin6_addr = endpoint.address().m_addr6;
             binderr = ::bind(socket, (sockaddr*)&serveraddr, sizeof(serveraddr));
         }
 
@@ -1256,7 +1262,7 @@ namespace tinyasync {
             }
             catch (...) {
                 reset();
-                auto what = format("open/bind/listen failed %s:%d", endpoint.m_address.to_string().c_str(), (int)(unsigned)endpoint.m_port);
+                auto what = format("open/bind/listen failed %s:%d", endpoint.address().to_string().c_str(), (int)(unsigned)endpoint.port());
                 std::throw_with_nested(std::runtime_error(what));
             }
         }
@@ -1271,7 +1277,8 @@ namespace tinyasync {
         void listen()
         {
             TINYASYNC_GUARD("Acceptor.listen(): ");
-            TINYASYNC_LOG("socket = %s, address = %s, port = %d", socket_c_str(m_socket), m_endpoint.m_address.to_string().c_str(), m_endpoint.m_port);
+            TINYASYNC_LOG("socket = %s, address = %s, port = %d", socket_c_str(m_socket), m_endpoint.address().to_string().c_str(),
+                m_endpoint.port());
 
             int max_pendding_connection = 5;
             int err = ::listen(m_socket, max_pendding_connection);
@@ -1628,23 +1635,23 @@ namespace tinyasync {
             auto connfd = m_socket;
 
             int connerr;
-            if(endpoint.m_address.m_address_type == AddressType::IpV4) {
+            if(endpoint.address().m_address_type == AddressType::IpV4) {
 
                 sockaddr_in serveraddr;
                 memset(&serveraddr, 0, sizeof(serveraddr));
                 serveraddr.sin_family = AF_INET;
-                serveraddr.sin_port = htons(endpoint.m_port);
-                serveraddr.sin_addr = endpoint.m_address.m_addr4;
+                serveraddr.sin_port = htons(endpoint.port());
+                serveraddr.sin_addr = endpoint.address().m_addr4;
                 NativeSocket connfd = m_socket;
                 connerr = ::connect(connfd, (sockaddr*)&serveraddr, sizeof(serveraddr));
 
-            } else if(endpoint.m_address.m_address_type == AddressType::IpV6) {
+            } else if(endpoint.address().m_address_type == AddressType::IpV6) {
 
                 sockaddr_in6 serveraddr;
                 memset(&serveraddr, 0, sizeof(serveraddr));
                 serveraddr.sin6_family = AF_INET6;
-                serveraddr.sin6_port = htons(endpoint.m_port);
-                serveraddr.sin6_addr = endpoint.m_address.m_addr6;
+                serveraddr.sin6_port = htons(endpoint.port());
+                serveraddr.sin6_addr = endpoint.address().m_addr6;
                 NativeSocket connfd = m_socket;
                 connerr = ::connect(connfd, (sockaddr*)&serveraddr, sizeof(serveraddr));
             }

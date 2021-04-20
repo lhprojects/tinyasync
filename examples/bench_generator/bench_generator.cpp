@@ -12,14 +12,14 @@ using namespace tinyasync;
 StackfulPool sb(1000);
 
 
-TINYASYNC_NOINL Task<uint64_t> task(StackfulPool &, uint64_t n)
+Task<uint64_t> task(StackfulPool &, uint64_t n)
 {
 	for (uint64_t i = 0; i < n; ++i) {
 		co_yield i;
 	}
 }
 
-TINYASYNC_NOINL Generator<uint64_t> generator(uint64_t n)
+Generator<uint64_t> generator(uint64_t n)
 {
 	for (uint64_t i = 0; i < n; ++i) {
 		co_yield i;
@@ -71,9 +71,9 @@ void timeit(T t, uint64_t n, char const *title)
 
 }
 
-//#define UPDATE_TOTAL() total = ((total >> 1) + x)
+#define UPDATE_TOTAL() total = ((total >> 1) + x)
 //#define UPDATE_TOTAL() total = ((total >> 1) + x*2)
-#define UPDATE_TOTAL() total += ((total >> 1) + x)
+//#define UPDATE_TOTAL() total += ((total >> 1) + x)
 
 TINYASYNC_NOINL uint64_t foo2(uint64_t N) {
 	uint64_t total = 0;
@@ -101,8 +101,8 @@ __attribute__((aligned(4096)))
 int main(int argc, char *[])
 {
 	
-	uint64_t nCreate = 1000000;
-    uint64_t N = 10;
+	uint64_t nCreate = 100000;
+    uint64_t N = 100;
 	N += argc;
 	uint64_t d = nCreate;
 
@@ -169,3 +169,4 @@ int main(int argc, char *[])
 
 	return 0;
 }
+

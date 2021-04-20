@@ -336,7 +336,6 @@ namespace tinyasync
         auto awaiter = (MutexLockAwaiter*)((char*)posttask - offsetof(MutexLockAwaiter, m_posttask));
         TINYASYNC_ASSERT(awaiter->m_mutex->is_locked());
 
-        TINYASYNC_LOG("resume `%s`", c_name(awaiter->m_suspended_coroutine));
         TINYASYNC_RESUME(awaiter->m_suspended_coroutine);
     }
 
